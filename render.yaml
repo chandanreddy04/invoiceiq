@@ -1,0 +1,46 @@
+# Render Blueprint - deploys the app + a free Postgres database
+# together. On Render: New + -> Blueprint -> connect this repo -> it
+# reads this file automatically.
+#
+# NOT build-verified against a live Render deploy (no Render account
+# was available while writing this) - syntax matches Render's
+# documented Blueprint spec at the time of writing, but if Render has
+# changed field names since, check https://render.com/docs/blueprint-spec
+# and adjust. Flagging this honestly rather than claiming a test that
+# wasn't actually run.
+#
+# What this does NOT do: run Ollama. Free tiers don't have the RAM
+# for it. The deployed app works fully for invoice CRUD, dashboard,
+# approvals, etc.; AI agent features will show their existing
+# "LLM unavailable" fallback behavior (already tested - see
+# tests/test_invoice_service.py and each agent's LLMUnavailableError
+# handling) rather than crash.
+
+databases:
+  - name: invoiceiq-db
+    plan: free
+    databaseName: invoiceiq
+    user: invoiceiq
+
+services:
+  - type: web
+    name: invoiceiq
+    env: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: invoiceiq-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: APP_NAME
+        value: InvoiceIQ
+      - key: APP_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: MAX_UPLOAD_SIZE_MB
+        value: "10"

@@ -26,6 +26,14 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/invoiceiq.db")
 
+# Render (and Heroku-style) managed Postgres hand out connection
+# strings starting "postgres://" - the legacy scheme. SQLAlchemy 1.4+
+# requires "postgresql://" and raises on the old one. Rewriting it
+# here means the exact connection string a cloud provider gives you
+# can be pasted into DATABASE_URL verbatim, no manual editing needed.
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
 # The `ollama` Python client reads OLLAMA_HOST from the process
 # environment itself when constructing its default client - since
 # load_dotenv() above already populated os.environ, no extra wiring

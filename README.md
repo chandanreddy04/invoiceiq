@@ -12,6 +12,7 @@ A locally-run invoicing application for a small business (Maple Street Bakery Su
 - [Prerequisites & Hardware](#prerequisites--hardware)
 - [Installation](#installation)
 - [Running the Application](#running-the-application)
+- [Public Cloud Deployment](#public-cloud-deployment)
 - [Demo Workflows](#demo-workflows)
 - [Testing](#testing)
 - [Evaluation Results](#evaluation-results)
@@ -223,6 +224,21 @@ Visit **http://localhost:8000** — you'll be redirected to log in, then to the 
 | Bookkeeper (cannot approve) | `bookkeeper@maplestreet.example` | `bookkeeper-demo-pass123` |
 
 To stop: `Ctrl+C`.
+
+## Public Cloud Deployment
+
+The app can be deployed publicly (a real URL, no `localhost`, cloud-hosted Postgres instead of local SQLite) via the included `render.yaml` Blueprint, using [Render](https://render.com)'s free tier for both the web service and the database.
+
+**Important, stated plainly:** free-tier cloud hosting cannot run Ollama (phi3.5 needs ~6-8GB RAM; free tiers cap around 512MB-1GB). The deployed version runs the full application — invoice CRUD, dashboard, approvals, audit log, RBAC, everything except AI inference — with AI agent features falling back to their already-tested "LLM unavailable" behavior (e.g., extraction falls back to the regex parser; fraud scoring still computes correctly, just without the LLM-written explanation sentence). This is a deliberate, documented tradeoff, not a bug.
+
+**Deploy steps:**
+1. Go to the [Render Dashboard](https://dashboard.render.com) → **New +** → **Blueprint**
+2. Connect your GitHub account and select this repository (Render will prompt you to authorize access — this step requires your own GitHub login, same as the push itself did)
+3. Render reads `render.yaml` automatically and provisions both the web service (built from `Dockerfile`) and a free Postgres database, wiring `DATABASE_URL` between them automatically
+4. First boot runs the same startup sequence as local dev: creates tables, then seeds the demo organization/vendors/customers/login users automatically (no manual script execution needed — there's no interactive shell on a fresh cloud deploy)
+5. Visit the URL Render assigns (`https://<your-service-name>.onrender.com`) and log in with the same demo credentials as above
+
+**Honestly flagged:** `render.yaml` was written against Render's documented Blueprint spec but has not been build-verified against a live deploy (no Render account was available while building this). If any field name has drifted since, check [render.com/docs/blueprint-spec](https://render.com/docs/blueprint-spec) and adjust — the fix is a one-line YAML edit, not an architecture problem.
 
 ## Demo Workflows
 

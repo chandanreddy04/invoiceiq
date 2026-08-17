@@ -11,7 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 
 from app.core.config import APP_NAME, APP_ENV, LOG_LEVEL, ensure_runtime_directories
-from app.database.session import init_db
+from app.database.session import init_db, SessionLocal
 from app.api import customers, vendors, invoices
 from app.web import routes as web_routes
 from app.security.deps import NotAuthenticated
@@ -29,6 +29,24 @@ app = FastAPI(title=APP_NAME, version="1.0.0")
 def on_startup() -> None:
     ensure_runtime_directories()
     init_db()
+
+    # Auto-seed demo data on boot - idempotent (both functions check
+    # for existing data before creating anything), so this is safe to
+    # run on every restart. Needed for cloud deployments where nobody
+    # has an interactive shell to run scripts/setup.py manually: a
+    # fresh deploy should be immediately reviewable, not an empty
+    # database with no login.
+    try:
+        import scripts.seed_demo_data as seed_demo_data
+        db = SessionLocal()
+        try:
+            org = seed_demo_data.seed_org_and_parties(db)
+            seed_demo_data.seed_users(db, org)
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("Demo data auto-seed failed - app will still start, but may have no login users")
+
     logger.info("%s started (env=%s)", APP_NAME, APP_ENV)
 
 
