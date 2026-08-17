@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %}{{ "Edit" if invoice else "New" }} Invoice - InvoiceIQ{% endblock %}
+{% block content %}
+<h1>{{ "Edit Invoice #" ~ invoice.invoice_number if invoice else "New Invoice" }}</h1>
+
+{% if fraud_flag %}
+<div class="flash {{ 'error' if fraud_flag.risk_score|float >= 0.7 else ('success' if fraud_flag.risk_score|float < 0.3 else '') }}" style="{% if fraud_flag.risk_score|float >= 0.3 and fraud_flag.risk_score|float < 0.7 %}background:#fff3cd;color:#856404;{% endif %}">
+    <strong>Fraud/Risk Agent: {{ (fraud_flag.risk_score|float * 100)|round }}% risk</strong>
+    {% if invoice.invoice_status.value == "pending_review" %}(invoice held for review - not auto-validated){% endif %}
+    <br>{{ fraud_flag.explanation }}
+</div>
+{% endif %}
+
+<form method="post" action="{{ form_action }}">
+    <div class="row">
+        <div>
+            <label>Direction</label>
+            <select name="direction" {% if invoice %}disabled{% endif %}>
+                <option value="incoming" {% if (invoice.direction.value if invoice else values.direction) == "incoming" %}selected{% endif %}>Incoming (vendor bills us)</option>
+                <option value="outgoing" {% if (invoice.direction.value if invoice else values.direction) == "outgoing" %}selected{% endif %}>Outgoing (we bill customer)</option>
+            </select>
+            {% if invoice %}<input type="hidden" name="direction" value="{{ invoice.direction.value }}">{% endif %}
+        </div>
+        <div>
+            <label>Invoice number</label>
+            <input type="text" name="invoice_number" value="{{ invoice.invoice_number if invoice else values.invoice_number|default('') }}" required>
+        </div>
+    </div>
+
+    <div class="row">
+        <div>
+            <label>Vendor (for incoming)</label>
+            <select name="vendor_id">
+                <option value="">-- none --</option>
+                {% for v in vendors %}
+                <option value="{{ v.id }}" {% if invoice and invoice.vendor_id == v.id %}selected{% endif %}>{{ v.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label>Customer (for outgoing)</label>
+            <select name="customer_id">
+                <option value="">-- none --</option>
+                {% for c in customers %}
+                <option value="{{ c.id }}" {% if invoice and invoice.customer_id == c.id %}selected{% endif %}>{{ c.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+    </div>
+
+    <div class="row">
+        <div>
+            <label>Invoice date</label>
+            <input type="date" name="invoice_date" value="{{ invoice.invoice_date if invoice else values.invoice_date|default('') }}" required>
+        </div>
+        <div>
+            <label>Due date</label>
+            <input type="date" name="due_date" value="{{ invoice.due_date if invoice else values.due_date|default('') }}" required>
+        </div>
+    </div>
+
+    <div class="row">
+        <div>
+            <label>Currency</label>
+            <input type="text" name="currency" maxlength="3" value="{{ invoice.currency if invoice else values.currency|default('USD') }}">
+        </div>
+        <div>
+            <label>Payment terms</label>
+            <input type="text" name="payment_terms" value="{{ invoice.payment_terms if invoice else values.payment_terms|default('Net 30') }}">
+        </div>
+        <div>
+            <label>Tax</label>
+            <input type="number" step="0.01" name="tax" value="{{ invoice.tax if invoice else values.tax|default('0') }}">
+        </div>
+        <div>
+            <label>Discount</label>
+            <input type="number" step="0.01" name="discount" value="{{ invoice.discount if invoice else values.discount|default('0') }}">
+        </div>
+    </div>
+
+    {% if invoice %}
+    <div class="row">
+        <div>
+            <label>Payment status</label>
+            <select name="payment_status">
+                {% for s in ["unpaid", "partially_paid", "paid", "overdue"] %}
+                <option value="{{ s }}" {% if invoice.payment_status.value == s %}selected{% endif %}>{{ s }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label>Invoice status</label>
+            <p><span class="badge {{ 'overdue' if invoice.invoice_status.value in ('pending_review','rejected') else 'paid' }}">{{ invoice.invoice_status.value }}</span></p>
+            {% if invoice.invoice_status.value == "pending_review" %}
+            <p class="confidence">Held by the Fraud/Risk Agent - resolve on the <a href="/web/approvals">Approvals</a> page.</p>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
+    <h3>Line items</h3>
+    <table class="items-table">
+        <tr><th>Description</th><th>Quantity</th><th>Unit price</th><th>Category</th></tr>
+        {% for i in range(8) %}
+        {% set existing = invoice.items[i] if invoice and i < invoice.items|length else none %}
+        <tr>
+            <td><input type="text" name="item_description_{{ i }}" value="{{ existing.description if existing else '' }}"></td>
+            <td><input type="number" step="0.001" name="item_quantity_{{ i }}" value="{{ existing.quantity if existing else '' }}"></td>
+            <td><input type="number" step="0.01" name="item_unit_price_{{ i }}" value="{{ existing.unit_price if existing else '' }}"></td>
+            <td>{% if existing and existing.category %}<span class="badge">{{ existing.category }}</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    <p class="confidence">Category is set automatically by the Classification Agent (see Agent Activity) and carries over between edits - it isn't a form field here.</p>
+    <p class="confidence">Leave rows blank to skip them. Totals (subtotal/total) are always computed by the server from these rows plus tax/discount - not editable directly.</p>
+
+    <button type="submit">{{ "Save changes" if invoice else "Create invoice" }}</button>
+</form>
+
+{% if invoice %}
+{% if invoice.payment_status.value != "paid" %}
+<h3>Communications</h3>
+{% if comms %}
+<table>
+    <tr><th>Status</th><th>Subject</th><th>To</th><th>Created</th></tr>
+    {% for c in comms %}
+    <tr>
+        <td><span class="badge {{ 'paid' if c.status == 'sent' else 'unpaid' }}">{{ c.status }}</span></td>
+        <td>{{ c.subject }}</td>
+        <td>{{ c.recipient }}</td>
+        <td>{{ c.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+    </tr>
+    {% endfor %}
+</table>
+<p class="confidence">Review and send drafts from the <a href="/web/communications">Communications</a> page - nothing is ever sent automatically.</p>
+{% endif %}
+<form method="post" action="/web/invoices/{{ invoice.id }}/draft-reminder" style="margin-top:0.5rem;">
+    <button type="submit" class="secondary">✉️ Draft a reminder/follow-up (AI-generated, requires approval to send)</button>
+</form>
+{% endif %}
+
+<form method="post" action="/web/invoices/{{ invoice.id }}/delete" onsubmit="return confirm('Delete this invoice?');" style="margin-top:1rem;">
+    <button type="submit" class="secondary">🗑️ Delete this invoice</button>
+</form>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,32 @@
+# Virtual environment
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Environment / secrets
+.env
+
+# Database and generated data
+data/*.db
+data/invoices/*
+!data/invoices/.gitkeep
+
+# Logs and eval output - only the placeholder is tracked, everything
+# else in logs/ is runtime-generated
+logs/*
+!logs/.gitkeep
+
+# Editor
+.vscode/
+.idea/
+
+# Claude Code tool-local config (dev-server launch config for this
+# tool, not part of the application)
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db

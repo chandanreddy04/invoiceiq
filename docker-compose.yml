@@ -1,0 +1,41 @@
+# Brings up both services this project needs: the app itself, and a
+# local Ollama server it talks to over the Docker network. Ollama's
+# model weights persist in a named volume (`ollama_data`) so
+# `docker compose down` doesn't force a multi-GB re-download next time.
+#
+# First run: docker compose up -d
+#            docker compose exec ollama ollama pull phi3.5
+#            docker compose exec app python scripts/setup.py
+# Then visit http://localhost:8000
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite:///./data/invoiceiq.db
+      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_MODEL=phi3.5
+      - SECRET_KEY=${SECRET_KEY:-dev-only-insecure-default-change-in-env}
+      - APP_ENV=development
+      - LOG_LEVEL=INFO
+    volumes:
+      - app_data:/app/data
+      - app_logs:/app/logs
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
+  app_data:
+  app_logs:

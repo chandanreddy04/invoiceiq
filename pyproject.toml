@@ -1,0 +1,17 @@
+[project]
+name = "invoiceiq"
+version = "1.0.0"
+description = "AI-based FinTech invoicing application using a local LLM, multi-agent architecture, and agentic AI with human-in-the-loop approval."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12,<3.13"
+
+# Python 3.12 is a hard requirement, not a suggestion: as of this
+# writing, some dependencies (pydantic-core) have no prebuilt wheels
+# for 3.13+/3.14, which makes `pip install` fall back to a slow,
+# fragile source build. This was discovered directly during
+# development, not from documentation - see README "Known Issues".
+#
+# This file declares project metadata only. Dependencies are managed
+# via requirements.txt (`pip install -r requirements.txt`) - this
+# project is not installed as a package (no `pip install .`).

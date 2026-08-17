@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Agent Activity - InvoiceIQ{% endblock %}
+{% block content %}
+<h1>🤖 Agent Activity</h1>
+<p>Every agent run, in order, with what it decided and how long it took.</p>
+
+{% if logs %}
+<table>
+    <tr>
+        <th>Time</th><th>Task</th><th>Invoice</th><th>Agent</th><th>Status</th><th>Result</th><th>Duration</th>
+    </tr>
+    {% for log in logs %}
+    <tr>
+        <td>{{ log.created_at.strftime("%Y-%m-%d %H:%M:%S") }}</td>
+        <td><code>{{ log.task_id }}</code></td>
+        <td>{% if log.invoice_id %}<a href="/web/invoices/{{ log.invoice_id }}">#{{ log.invoice_id }}</a>{% else %}-{% endif %}</td>
+        <td>{{ log.agent_name }}</td>
+        <td><span class="badge {{ 'paid' if log.status == 'success' else 'overdue' }}">{{ log.status }}</span></td>
+        <td>{{ log.error if log.error else log.output_summary }}</td>
+        <td>{{ log.duration_ms }}ms</td>
+    </tr>
+    {% endfor %}
+</table>
+{% else %}
+<p>No agent activity yet. Create or upload an invoice to see agents run.</p>
+{% endif %}
+{% endblock %}

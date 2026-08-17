@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Approvals - InvoiceIQ{% endblock %}
+{% block content %}
+<h1>✅ Approvals</h1>
+<p class="confidence">Every action an agent isn't allowed to take on its own lands here. Nothing gets approved except by a click on this page.</p>
+
+{% if requests %}
+{% for req in requests %}
+<div class="flash" style="background:#fff3cd;color:#856404; margin-bottom:1rem;">
+    <strong>{{ req.requested_by_agent }}</strong> requests approval —
+    <span class="badge">{{ req.type.replace('_', ' ') }}</span>
+    <br>{{ req.reason }}
+    <br>
+    {% if req.type == "high_risk_invoice" %}
+        <a href="/web/invoices/{{ req.related_id }}">View invoice #{{ req.related_id }}</a>
+    {% elif req.type == "send_communication" %}
+        <a href="/web/communications">View in Communications</a>
+    {% endif %}
+    <form method="post" action="/web/approvals/{{ req.id }}/approve" style="display:inline; margin-left:1rem;">
+        <button type="submit" style="margin-top:0;">✅ Approve</button>
+    </form>
+    <form method="post" action="/web/approvals/{{ req.id }}/reject" style="display:inline; margin-left:0.5rem;">
+        <button type="submit" class="secondary" style="margin-top:0;">❌ Reject</button>
+    </form>
+</div>
+{% endfor %}
+{% else %}
+<p>Nothing pending approval right now.</p>
+{% endif %}
+
+{% if decided %}
+<h3>Recently decided</h3>
+<table>
+    <tr><th>Agent</th><th>Type</th><th>Decision</th><th>When</th></tr>
+    {% for req in decided %}
+    <tr>
+        <td>{{ req.requested_by_agent }}</td>
+        <td>{{ req.type.replace('_', ' ') }}</td>
+        <td><span class="badge {{ 'paid' if req.status == 'approved' else 'overdue' }}">{{ req.status }}</span></td>
+        <td>{{ req.decided_at.strftime("%Y-%m-%d %H:%M") if req.decided_at else "" }}</td>
+    </tr>
+    {% endfor %}
+</table>
+{% endif %}
+{% endblock %}

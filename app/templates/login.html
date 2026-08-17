@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Log in - InvoiceIQ</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 400px; margin: 4rem auto; padding: 0 1rem; }
+        label { display: block; margin-top: 0.75rem; font-weight: 600; font-size: 0.9em; }
+        input { padding: 0.5rem; margin-top: 0.2rem; width: 100%; box-sizing: border-box; }
+        button { margin-top: 1.25rem; padding: 0.6rem 1.2rem; background: #2a5db0; color: white; border: none; border-radius: 4px; cursor: pointer; width: 100%; }
+        .flash.error { background: #f8d7da; color: #721c24; padding: 0.75rem; border-radius: 4px; margin-bottom: 1rem; }
+        .hint { font-size: 0.85em; color: #666; margin-top: 1rem; }
+    </style>
+</head>
+<body>
+    <h1>🧾 InvoiceIQ</h1>
+    {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+    <form method="post" action="/web/login">
+        <input type="hidden" name="next" value="{{ next }}">
+        <label>Email</label>
+        <input type="email" name="email" required autofocus>
+        <label>Password</label>
+        <input type="password" name="password" required>
+        <button type="submit">Log in</button>
+    </form>
+    <p class="hint">Demo credentials are printed by scripts/seed_demo_data.py.</p>
+</body>
+</html>

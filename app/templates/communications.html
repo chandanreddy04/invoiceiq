@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Communications - InvoiceIQ{% endblock %}
+{% block content %}
+<h1>✉️ Communications</h1>
+<p class="confidence">History of AI-drafted messages. Approve or reject drafts on the <a href="/web/approvals">Approvals</a> page - nothing is ever sent automatically.</p>
+
+{% if comms %}
+{% for c in comms %}
+<div class="flash {{ 'success' if c.status == 'sent' else '' }}" style="{% if c.status == 'draft' %}background:#fff3cd;color:#856404;{% elif c.status == 'rejected' %}background:#f8d7da;color:#721c24;{% endif %} margin-bottom:1rem;">
+    <strong>{{ c.subject }}</strong> — to {{ c.recipient }}
+    <span class="badge {{ 'paid' if c.status == 'sent' else ('overdue' if c.status == 'rejected' else 'unpaid') }}">{{ c.status }}</span>
+    <br>
+    <span style="white-space: pre-wrap;">{{ c.body }}</span>
+    <br>
+    <a href="/web/invoices/{{ c.invoice_id }}">View invoice #{{ c.invoice_id }}</a>
+    {% if c.status == "sent" %}
+    <span class="confidence"> Sent {{ c.sent_at.strftime("%Y-%m-%d %H:%M") }}</span>
+    {% elif c.status == "draft" %}
+    <span class="confidence"> Awaiting approval</span>
+    {% endif %}
+</div>
+{% endfor %}
+{% else %}
+<p>No drafted communications yet. Draft one from an unpaid invoice's page.</p>
+{% endif %}
+{% endblock %}

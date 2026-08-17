@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Invoices - InvoiceIQ{% endblock %}
+{% block content %}
+<h1>🧾 Invoices</h1>
+<p>Maple Street Bakery Supply Co. (demo)</p>
+
+<form method="get" action="/web/invoices" class="row">
+    <div>
+        <label>Direction</label>
+        <select name="direction" onchange="this.form.submit()">
+            <option value="" {% if not direction %}selected{% endif %}>All</option>
+            <option value="incoming" {% if direction == "incoming" %}selected{% endif %}>Incoming (we owe)</option>
+            <option value="outgoing" {% if direction == "outgoing" %}selected{% endif %}>Outgoing (owed to us)</option>
+        </select>
+    </div>
+    <div>
+        <label>Payment status</label>
+        <select name="payment_status" onchange="this.form.submit()">
+            <option value="" {% if not payment_status %}selected{% endif %}>All</option>
+            {% for s in ["unpaid", "partially_paid", "paid", "overdue"] %}
+            <option value="{{ s }}" {% if payment_status == s %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+        </select>
+    </div>
+</form>
+
+{% if invoices %}
+<table>
+    <tr>
+        <th>ID</th><th>Direction</th><th>Invoice #</th><th>Party</th><th>Due date</th><th>Total</th><th>Payment</th><th>Status</th><th>Risk</th>
+    </tr>
+    {% for inv in invoices %}
+    <tr>
+        <td><a href="/web/invoices/{{ inv.id }}">{{ inv.id }}</a></td>
+        <td>{{ inv.direction.value }}</td>
+        <td>{{ inv.invoice_number }}</td>
+        <td>{{ inv.vendor.name if inv.vendor else (inv.customer.name if inv.customer else "-") }}</td>
+        <td>{{ inv.due_date }}</td>
+        <td>{{ inv.total }} {{ inv.currency }}</td>
+        <td><span class="badge {{ inv.payment_status.value }}">{{ inv.payment_status.value }}</span></td>
+        <td>{{ inv.invoice_status.value }}</td>
+        <td>{% if inv.risk_score is not none %}<span class="badge {{ 'overdue' if inv.risk_score|float >= 0.7 else '' }}">{{ (inv.risk_score|float * 100)|round }}%</span>{% else %}-{% endif %}</td>
+    </tr>
+    {% endfor %}
+</table>
+{% else %}
+<p>No invoices yet. <a href="/web/invoices/new">Create one</a> or <a href="/web/upload">upload a PDF</a>.</p>
+{% endif %}
+{% endblock %}

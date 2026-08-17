@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}AI Assistant - InvoiceIQ{% endblock %}
+{% block content %}
+<h1>💬 AI Assistant</h1>
+<p>Ask about invoices in plain English. The assistant can only read data through a fixed set of tools - it can't write SQL or change anything.</p>
+
+<form method="post" action="/web/assistant">
+    <input type="text" name="question" placeholder="e.g. Show unpaid invoices over $500" value="{{ question or '' }}" style="width:70%;display:inline-block;" required>
+    <button type="submit" style="margin-top:0;">Ask</button>
+</form>
+
+<p style="margin-top:1rem;">
+    Try: "What do I owe?" &middot; "Show overdue invoices" &middot; "Invoices over $1000" &middot; "Show paid outgoing invoices"
+</p>
+
+{% if result %}
+<div class="flash success" style="margin-top:1.5rem;">
+    <strong>You asked:</strong> {{ result.question }}
+</div>
+<pre style="white-space: pre-wrap; background:#f7f7f7; padding: 1rem;">{{ result.answer }}</pre>
+<details>
+    <summary>Parsed filters (what the LLM extracted from your question)</summary>
+    <pre style="background:#f7f7f7; padding: 1rem;">{{ result.intent }}</pre>
+</details>
+{% endif %}
+{% endblock %}

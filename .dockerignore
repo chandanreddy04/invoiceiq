@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+data/*.db
+data/invoices/*
+!data/invoices/.gitkeep
+logs/*
+!logs/.gitkeep
+.git/
+.github/
+docs/
+tests/
+*.md

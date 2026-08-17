@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Upload Invoice - InvoiceIQ{% endblock %}
+{% block content %}
+<h1>📄 Upload Invoice PDF</h1>
+<p>
+    Upload a vendor PDF invoice. Text is extracted with PyMuPDF and a few
+    header fields (invoice number, dates, total) are guessed with a simple
+    pattern matcher - you'll review and correct everything on the next
+    screen before anything is saved. Only PDFs with a real text layer are
+    supported right now (not scanned images).
+</p>
+<form method="post" action="/web/upload" enctype="multipart/form-data">
+    <label>PDF file</label>
+    <input type="file" name="file" accept="application/pdf" required>
+    <button type="submit">Extract fields</button>
+</form>
+{% endblock %}

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Payments - InvoiceIQ{% endblock %}
+{% block content %}
+<h1>💰 Payment Priorities</h1>
+<p class="confidence">The Payment/AP Agent only recommends - it never pays anything. Mark an invoice paid yourself on its own page when you're ready.</p>
+
+<div class="flash success">{{ result.explanation }}</div>
+
+<h3>Recommended payment order</h3>
+{% if result.recommended %}
+<table>
+    <tr><th>Priority</th><th>Invoice #</th><th>Vendor</th><th>Total</th><th>Due date</th></tr>
+    {% for inv in result.recommended %}
+    <tr>
+        <td>{{ loop.index }}</td>
+        <td><a href="/web/invoices/{{ inv.id }}">{{ inv.invoice_number }}</a></td>
+        <td>{{ inv.vendor.name if inv.vendor else "-" }}</td>
+        <td>{{ inv.total }} {{ inv.currency }}</td>
+        <td>{{ inv.due_date }}</td>
+    </tr>
+    {% endfor %}
+</table>
+{% else %}
+<p>Nothing to recommend right now.</p>
+{% endif %}
+
+{% if result.held_for_review %}
+<h3>⚠️ Held back - fraud review needed first</h3>
+<table>
+    <tr><th>Invoice #</th><th>Vendor</th><th>Total</th><th>Risk</th></tr>
+    {% for inv in result.held_for_review %}
+    <tr>
+        <td><a href="/web/invoices/{{ inv.id }}">{{ inv.invoice_number }}</a></td>
+        <td>{{ inv.vendor.name if inv.vendor else "-" }}</td>
+        <td>{{ inv.total }} {{ inv.currency }}</td>
+        <td>{{ (inv.risk_score|float * 100)|round }}%</td>
+    </tr>
+    {% endfor %}
+</table>
+{% endif %}
+{% endblock %}
