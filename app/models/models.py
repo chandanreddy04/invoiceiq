@@ -117,6 +117,19 @@ class Invoice(Base):
     items = relationship("InvoiceItem", back_populates="invoice", cascade="all, delete-orphan")
     payments = relationship("Payment", back_populates="invoice", cascade="all, delete-orphan")
 
+    # FraudFlag/AgentLog/Communication weren't declared as relationships
+    # here at all until this fix - each had an invoice_id foreign key
+    # from ITS side, but nothing cascaded from the Invoice side. SQLite
+    # doesn't enforce foreign keys by default, so deleting an invoice
+    # silently left orphaned rows behind; Postgres correctly rejects
+    # the delete outright with a foreign-key violation. Found via a
+    # real 500 error on the live Postgres deployment - SQLite had been
+    # masking this the entire time it was the only database tested
+    # against.
+    fraud_flags = relationship("FraudFlag", cascade="all, delete-orphan")
+    agent_logs = relationship("AgentLog", cascade="all, delete-orphan")
+    communications = relationship("Communication", cascade="all, delete-orphan")
+
 
 class InvoiceItem(Base):
     __tablename__ = "invoice_items"
@@ -162,7 +175,7 @@ class FraudFlag(Base):
     explanation = Column(String(2000), nullable=True)     # LLM-written prose version of the reasons
     created_at = Column(DateTime, default=utcnow_naive)
 
-    invoice = relationship("Invoice")
+    invoice = relationship("Invoice", back_populates="fraud_flags")
 
 
 class AgentLog(Base):
@@ -206,7 +219,7 @@ class Communication(Base):
     created_at = Column(DateTime, default=utcnow_naive)
     sent_at = Column(DateTime, nullable=True)
 
-    invoice = relationship("Invoice")
+    invoice = relationship("Invoice", back_populates="communications")
 
 
 class ApprovalRequest(Base):

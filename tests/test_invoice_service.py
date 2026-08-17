@@ -93,3 +93,35 @@ def test_update_invoice_recomputes_total_when_tax_changes(db_session, org, vendo
 
     updated = invoice_service.update_invoice(db_session, invoice, InvoiceUpdate(tax=Decimal("3.00")))
     assert updated.total == Decimal("23.00")
+
+
+def test_delete_invoice_removes_related_rows_no_orphans(db_session, org, vendor, mock_ollama_chat):
+    """Regression test for a real bug found on the live Postgres
+    deployment: deleting an invoice with related FraudFlag/AgentLog/
+    Communication rows raised a foreign-key violation on Postgres,
+    because those tables had an invoice_id FK but nothing cascaded
+    from the Invoice side. SQLite doesn't enforce foreign keys by
+    default, so this same operation silently left orphaned rows
+    behind there instead of erroring - which is why this test checks
+    for orphans directly (asserting only "delete_invoice() didn't
+    raise" would pass even without the fix, since SQLite never
+    enforced the constraint in the first place)."""
+    invoice = invoice_service.create_invoice(db_session, org.id, make_payload(vendor_id=vendor.id))
+    invoice_id = invoice.id
+
+    # The mocked pipeline already created a FraudFlag + 2 AgentLog rows
+    # (fraud_risk_agent + classification_agent). Add a Communication too.
+    from app.agents import communication_agent
+    invoice.due_date = date.today() - timedelta(days=1)  # make it "overdue" for a plausible draft
+    db_session.commit()
+    communication_agent.draft_reminder(db_session, invoice)
+
+    assert db_session.query(FraudFlag).filter(FraudFlag.invoice_id == invoice_id).count() == 1
+    assert db_session.query(AgentLog).filter(AgentLog.invoice_id == invoice_id).count() >= 1
+
+    invoice_service.delete_invoice(db_session, invoice)
+
+    assert db_session.query(FraudFlag).filter(FraudFlag.invoice_id == invoice_id).count() == 0
+    assert db_session.query(AgentLog).filter(AgentLog.invoice_id == invoice_id).count() == 0
+    from app.models.models import Communication
+    assert db_session.query(Communication).filter(Communication.invoice_id == invoice_id).count() == 0
