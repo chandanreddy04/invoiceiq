@@ -111,3 +111,72 @@ def test_generate_financial_summary_math(db_session, org, vendor, customer):
     assert summary["count_overdue"] == 1
     assert summary["overdue_total"] == Decimal("200")
     assert summary["count_invoices"] == 3
+
+
+def test_search_invoices_filters_by_party_name_vendor(db_session, org, vendor, customer):
+    """Regression test for the real gap found live: the AI Assistant
+    had no way to filter by vendor/customer name at all until this."""
+    from app.models.models import Vendor
+    other_vendor = Vendor(organization_id=org.id, name="Sunrise Packaging Co.", email="s@test.example")
+    db_session.add(other_vendor)
+    db_session.commit()
+
+    db_session.add(make_invoice(org.id, vendor.id, None, InvoiceDirection.incoming, "V1-1", 100, date.today()))
+    db_session.add(make_invoice(org.id, other_vendor.id, None, InvoiceDirection.incoming, "V2-1", 200, date.today()))
+    db_session.commit()
+
+    # `vendor` fixture is named "Test Vendor" - partial, case-insensitive match
+    result = search_invoices(db_session, org.id, party_name="test vendor")
+    assert [i.invoice_number for i in result] == ["V1-1"]
+
+    result2 = search_invoices(db_session, org.id, party_name="sunrise")
+    assert [i.invoice_number for i in result2] == ["V2-1"]
+
+
+def test_search_invoices_filters_by_party_name_customer(db_session, org, vendor, customer):
+    db_session.add(make_invoice(org.id, None, customer.id, InvoiceDirection.outgoing, "C1-1", 100, date.today()))
+    db_session.commit()
+
+    result = search_invoices(db_session, org.id, party_name="test customer")
+    assert [i.invoice_number for i in result] == ["C1-1"]
+
+    result_none = search_invoices(db_session, org.id, party_name="nonexistent company")
+    assert result_none == []
+
+
+def test_search_invoices_filters_by_invoice_number_partial(db_session, org, vendor):
+    db_session.add(make_invoice(org.id, vendor.id, None, InvoiceDirection.incoming, "GGM-0847", 100, date.today()))
+    db_session.add(make_invoice(org.id, vendor.id, None, InvoiceDirection.incoming, "SPC-1102", 100, date.today()))
+    db_session.commit()
+
+    result = search_invoices(db_session, org.id, invoice_number="ggm")
+    assert [i.invoice_number for i in result] == ["GGM-0847"]
+
+
+def test_search_invoices_filters_by_category(db_session, org, vendor):
+    from app.models.models import InvoiceItem
+
+    inv1 = make_invoice(org.id, vendor.id, None, InvoiceDirection.incoming, "CAT-1", 100, date.today())
+    inv1.items = [InvoiceItem(description="Flour", quantity=Decimal("1"), unit_price=Decimal("100"),
+                               line_total=Decimal("100"), category="Raw Ingredients")]
+    inv2 = make_invoice(org.id, vendor.id, None, InvoiceDirection.incoming, "CAT-2", 50, date.today())
+    inv2.items = [InvoiceItem(description="Electricity", quantity=Decimal("1"), unit_price=Decimal("50"),
+                               line_total=Decimal("50"), category="Utilities")]
+    db_session.add_all([inv1, inv2])
+    db_session.commit()
+
+    result = search_invoices(db_session, org.id, category="utilities")
+    assert [i.invoice_number for i in result] == ["CAT-2"]
+
+
+def test_search_invoices_filters_by_risky_only(db_session, org, vendor):
+    normal = make_invoice(org.id, vendor.id, None, InvoiceDirection.incoming, "RISK-LOW", 100, date.today())
+    normal.risk_score = Decimal("0.3")
+    risky = make_invoice(org.id, vendor.id, None, InvoiceDirection.incoming, "RISK-HIGH", 100, date.today())
+    risky.risk_score = Decimal("0.75")
+    unassessed = make_invoice(org.id, vendor.id, None, InvoiceDirection.incoming, "RISK-NONE", 100, date.today())
+    db_session.add_all([normal, risky, unassessed])
+    db_session.commit()
+
+    result = search_invoices(db_session, org.id, risky_only=True)
+    assert [i.invoice_number for i in result] == ["RISK-HIGH"]

@@ -9,9 +9,12 @@ unrestricted raw SQL from the LLM").
 from datetime import date
 from decimal import Decimal
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
-from app.models.models import Invoice, InvoiceDirection, PaymentStatus
+from app.models.models import Invoice, InvoiceDirection, PaymentStatus, Vendor, Customer, InvoiceItem
+
+RISKY_THRESHOLD = Decimal("0.5")  # same bar the Dashboard's "Suspicious" tile uses
 
 
 def search_invoices(
@@ -22,6 +25,10 @@ def search_invoices(
     min_total: float | None = None,
     max_total: float | None = None,
     overdue_only: bool = False,
+    party_name: str | None = None,
+    invoice_number: str | None = None,
+    category: str | None = None,
+    risky_only: bool = False,
 ) -> list[Invoice]:
     query = db.query(Invoice).options(joinedload(Invoice.items)).filter(Invoice.organization_id == org_id)
 
@@ -35,6 +42,29 @@ def search_invoices(
         query = query.filter(Invoice.total <= Decimal(str(max_total)))
     if overdue_only:
         query = query.filter(Invoice.due_date < date.today(), Invoice.payment_status != PaymentStatus.paid)
+    if invoice_number:
+        query = query.filter(Invoice.invoice_number.ilike(f"%{invoice_number}%"))
+    if risky_only:
+        query = query.filter(Invoice.risk_score.isnot(None), Invoice.risk_score >= RISKY_THRESHOLD)
+
+    if party_name:
+        # An invoice has either a vendor OR a customer, never both - two
+        # outer joins plus an OR covers whichever one actually applies,
+        # instead of requiring the caller to already know the direction.
+        term = f"%{party_name}%"
+        query = (
+            query.outerjoin(Vendor, Invoice.vendor_id == Vendor.id)
+            .outerjoin(Customer, Invoice.customer_id == Customer.id)
+            .filter(or_(Vendor.name.ilike(term), Customer.name.ilike(term)))
+        )
+
+    if category:
+        # Matching on a child table's column requires a join; .distinct()
+        # avoids the same invoice appearing twice if more than one line
+        # item matches the category.
+        query = query.join(InvoiceItem, Invoice.id == InvoiceItem.invoice_id).filter(
+            InvoiceItem.category.ilike(f"%{category}%")
+        ).distinct()
 
     return query.order_by(Invoice.due_date.asc()).all()
 
