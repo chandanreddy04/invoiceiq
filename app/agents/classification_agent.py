@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.models.models import Invoice
 from app.schemas.classification import ClassificationResult
-from app.services.llm_extraction_service import MODEL_NAME, LLMUnavailableError
+from app.services.llm_client import LLMUnavailableError, chat
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +45,6 @@ LOW_CONFIDENCE_THRESHOLD = 0.6
 
 
 def classify_descriptions(descriptions: list[str]) -> ClassificationResult:
-    import ollama
-
     prompt = (
         "Classify each of these invoice line items into exactly one of these categories: "
         f"{', '.join(CATEGORIES)}.\n\n"
@@ -55,14 +53,15 @@ def classify_descriptions(descriptions: list[str]) -> ClassificationResult:
         "and your confidence (0 to 1)."
     )
     try:
-        response = ollama.chat(
-            model=MODEL_NAME,
+        content = chat(
             messages=[{"role": "user", "content": prompt}],
-            format=ClassificationResult.model_json_schema(),
-            options={"temperature": 0},
+            schema=ClassificationResult.model_json_schema(),
         )
-        return ClassificationResult.model_validate(json.loads(response["message"]["content"]))
-    except Exception as e:
+        return ClassificationResult.model_validate(json.loads(content))
+    except LLMUnavailableError as e:
+        logger.warning("Classification LLM call failed: %s", e)
+        raise
+    except (json.JSONDecodeError, ValueError) as e:
         logger.warning("Classification LLM call failed: %s", e)
         raise LLMUnavailableError(str(e)) from e
 

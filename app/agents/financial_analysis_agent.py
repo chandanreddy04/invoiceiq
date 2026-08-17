@@ -30,7 +30,7 @@ import logging
 from sqlalchemy.orm import Session
 
 from app.schemas.query_intent import QueryIntent
-from app.services.llm_extraction_service import MODEL_NAME, LLMUnavailableError
+from app.services.llm_client import LLMUnavailableError, chat
 from app.tools import invoice_tools
 
 logger = logging.getLogger(__name__)
@@ -68,20 +68,19 @@ SYSTEM_PROMPT = (
 
 
 def parse_intent(question: str) -> QueryIntent:
-    import ollama
-
     try:
-        response = ollama.chat(
-            model=MODEL_NAME,
+        content = chat(
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": question},
             ],
-            format=QueryIntent.model_json_schema(),
-            options={"temperature": 0},
+            schema=QueryIntent.model_json_schema(),
         )
-        return QueryIntent.model_validate(json.loads(response["message"]["content"]))
-    except Exception as e:
+        return QueryIntent.model_validate(json.loads(content))
+    except LLMUnavailableError as e:
+        logger.warning("Intent parsing failed, defaulting to summary: %s", e)
+        raise
+    except (json.JSONDecodeError, ValueError) as e:
         logger.warning("Intent parsing failed, defaulting to summary: %s", e)
         raise LLMUnavailableError(str(e)) from e
 

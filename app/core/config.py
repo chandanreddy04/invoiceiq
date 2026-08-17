@@ -42,6 +42,15 @@ if DATABASE_URL.startswith("postgres://"):
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "phi3.5")
 
+# Render's free tier has no CPU/RAM budget to run even a 3.8B local model,
+# so the cloud deployment needs a different LLM backend than local dev
+# uses. Setting GROQ_API_KEY switches every agent (via app/services/
+# llm_client.py) from local Ollama to Groq's free-tier hosted API - same
+# prompts, same structured-output contract, just a different backend.
+# Unset locally, so local dev behavior is completely unchanged.
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-only-insecure-default-change-in-env")
 
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "./data/invoices"))

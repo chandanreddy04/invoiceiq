@@ -21,14 +21,10 @@ once that agent is built in Phase 4.
 import json
 import logging
 
-import ollama
-
-from app.core.config import OLLAMA_MODEL
 from app.schemas.extraction import LLMExtractedInvoice
+from app.services.llm_client import MODEL_NAME, LLMUnavailableError, chat  # re-exported: every agent imports MODEL_NAME/LLMUnavailableError from this module
 
 logger = logging.getLogger(__name__)
-
-MODEL_NAME = OLLAMA_MODEL  # re-exported: every agent imports MODEL_NAME from this module
 
 SYSTEM_PROMPT = (
     "You extract structured data from invoice text. Read the invoice text "
@@ -39,26 +35,19 @@ SYSTEM_PROMPT = (
 )
 
 
-class LLMUnavailableError(Exception):
-    """Raised when Ollama can't be reached or the model isn't pulled yet."""
-
-
 def extract_invoice_with_llm(raw_text: str) -> LLMExtractedInvoice:
     try:
-        response = ollama.chat(
-            model=MODEL_NAME,
+        content = chat(
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": f"Invoice text:\n\n{raw_text}"},
             ],
-            format=LLMExtractedInvoice.model_json_schema(),
-            options={"temperature": 0},  # deterministic-ish extraction, not creative writing
+            schema=LLMExtractedInvoice.model_json_schema(),
         )
-    except Exception as e:
+    except LLMUnavailableError as e:
         logger.warning("LLM extraction failed: %s", e)
-        raise LLMUnavailableError(str(e)) from e
+        raise
 
-    content = response["message"]["content"]
     try:
         data = json.loads(content)
         return LLMExtractedInvoice.model_validate(data)

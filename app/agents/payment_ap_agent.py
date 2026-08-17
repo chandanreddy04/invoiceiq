@@ -26,7 +26,7 @@ from decimal import Decimal
 from sqlalchemy.orm import Session
 
 from app.models.models import Invoice, InvoiceDirection, PaymentStatus
-from app.services.llm_extraction_service import MODEL_NAME, LLMUnavailableError
+from app.services.llm_client import LLMUnavailableError, chat
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,6 @@ def _explain(ranked: list, held: list) -> str:
 
     lines = []
     try:
-        import ollama
         summary_lines = [f"{inv.invoice_number} (${inv.total}, due {inv.due_date})" for _, inv in ranked[:5]]
         held_lines = [f"{inv.invoice_number} (${inv.total}, risk {float(inv.risk_score):.0%})" for _, inv in held]
         prompt = (
@@ -85,9 +84,8 @@ def _explain(ranked: list, held: list) -> str:
             f"Hold these back and do not pay yet, pending fraud review: {', '.join(held_lines) or 'none'}. "
             "Do not invent any other facts."
         )
-        response = ollama.chat(model=MODEL_NAME, messages=[{"role": "user", "content": prompt}], options={"temperature": 0})
-        return response["message"]["content"].strip()
-    except Exception as e:
+        return chat(messages=[{"role": "user", "content": prompt}]).strip()
+    except LLMUnavailableError as e:
         logger.warning("Payment explanation LLM call failed, using plain summary: %s", e)
         for _, inv in ranked:
             lines.append(f"Pay {inv.invoice_number} (${inv.total}, due {inv.due_date}).")

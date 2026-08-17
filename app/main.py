@@ -78,12 +78,9 @@ def health_check() -> dict:
     except Exception as e:
         db_status = f"unavailable: {e}"
 
-    llm_status = "ok"
-    try:
-        import ollama
-        ollama.list()
-    except Exception as e:
-        llm_status = f"unavailable: {e}"
+    from app.services.llm_client import is_available as llm_is_available
+
+    llm_status = "ok" if llm_is_available() else "unavailable"
 
     overall = "ok" if db_status == "ok" else "degraded"
     return {

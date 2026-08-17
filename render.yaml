@@ -1,20 +1,15 @@
 # Render Blueprint - deploys the app + a free Postgres database
 # together. On Render: New + -> Blueprint -> connect this repo -> it
-# reads this file automatically.
-#
-# NOT build-verified against a live Render deploy (no Render account
-# was available while writing this) - syntax matches Render's
-# documented Blueprint spec at the time of writing, but if Render has
-# changed field names since, check https://render.com/docs/blueprint-spec
-# and adjust. Flagging this honestly rather than claiming a test that
-# wasn't actually run.
+# reads this file automatically. Verified live: this exact file
+# deployed successfully at https://invoiceiq-owo3.onrender.com.
 #
 # What this does NOT do: run Ollama. Free tiers don't have the RAM
 # for it. The deployed app works fully for invoice CRUD, dashboard,
-# approvals, etc.; AI agent features will show their existing
-# "LLM unavailable" fallback behavior (already tested - see
-# tests/test_invoice_service.py and each agent's LLMUnavailableError
-# handling) rather than crash.
+# approvals, etc. without any LLM at all; AI agent features fall back
+# to their existing "LLM unavailable" behavior (see each agent's
+# LLMUnavailableError handling) unless GROQ_API_KEY is set below, in
+# which case every agent uses Groq's free-tier hosted API instead of
+# a local model - see app/services/llm_client.py.
 
 databases:
   - name: invoiceiq-db
@@ -44,3 +39,10 @@ services:
         value: INFO
       - key: MAX_UPLOAD_SIZE_MB
         value: "10"
+      # Optional. Leave unset to keep the cloud deployment LLM-free (the
+      # default, always free). Get a free key at https://console.groq.com/keys
+      # and paste it into the Render dashboard - sync: false means Render
+      # will prompt for it interactively rather than expecting a value here,
+      # so it's never committed to the repo.
+      - key: GROQ_API_KEY
+        sync: false

@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.models.models import Invoice, Communication, InvoiceDirection, ApprovalRequest
 from app.schemas.communication import DraftedReminder
-from app.services.llm_extraction_service import MODEL_NAME
+from app.services.llm_client import chat
 
 logger = logging.getLogger(__name__)
 
@@ -72,14 +72,12 @@ def draft_reminder(db: Session, invoice: Invoice) -> Communication | None:
     )
 
     try:
-        import ollama
-        response = ollama.chat(
-            model=MODEL_NAME,
+        content = chat(
             messages=[{"role": "user", "content": prompt}],
-            format=DraftedReminder.model_json_schema(),
-            options={"temperature": 0.3},
+            schema=DraftedReminder.model_json_schema(),
+            temperature=0.3,
         )
-        drafted = DraftedReminder.model_validate(json.loads(response["message"]["content"]))
+        drafted = DraftedReminder.model_validate(json.loads(content))
     except Exception as e:
         # Every other agent in this app has a fallback for this exact
         # case (fraud/classification/extraction all degrade instead of

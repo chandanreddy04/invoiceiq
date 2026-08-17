@@ -36,7 +36,7 @@ from sqlalchemy.orm import Session
 
 from app.models.models import Invoice, Vendor, FraudFlag, InvoiceStatus, ApprovalRequest
 from app.utils.time import utcnow_naive
-from app.services.llm_extraction_service import LLMUnavailableError
+from app.services.llm_client import LLMUnavailableError, chat
 
 logger = logging.getLogger(__name__)
 
@@ -147,9 +147,6 @@ def explain_risk_with_llm(invoice: Invoice, risk_score: float, reasons: list[str
     score + reasons into a natural sentence. If the LLM is unavailable,
     the caller falls back to joining `reasons` directly - the agent's
     verdict does not depend on this call succeeding."""
-    import ollama
-    from app.services.llm_extraction_service import MODEL_NAME
-
     prompt = (
         f"An invoice was scored {risk_score:.0%} risk based on these factors:\n"
         + "\n".join(f"- {r}" for r in reasons)
@@ -157,11 +154,10 @@ def explain_risk_with_llm(invoice: Invoice, risk_score: float, reasons: list[str
         "to a small business owner. Do not invent any facts not listed above."
     )
     try:
-        response = ollama.chat(model=MODEL_NAME, messages=[{"role": "user", "content": prompt}])
-        return response["message"]["content"].strip()
-    except Exception as e:
+        return chat(messages=[{"role": "user", "content": prompt}]).strip()
+    except LLMUnavailableError as e:
         logger.warning("Fraud explanation LLM call failed, falling back to raw reasons: %s", e)
-        raise LLMUnavailableError(str(e)) from e
+        raise
 
 
 def run_fraud_check(db: Session, invoice: Invoice) -> FraudFlag | None:
