@@ -106,7 +106,7 @@ function streamRiskExplanation(invoiceId) {
             <label>Invoice status</label>
             <p><span class="badge {{ 'overdue' if invoice.invoice_status.value in ('pending_review','rejected') else 'paid' }}">{{ invoice.invoice_status.value }}</span></p>
             {% if invoice.invoice_status.value == "pending_review" %}
-            <p class="confidence">Held by the Fraud/Risk Agent - resolve on the <a href="/web/approvals">Approvals</a> page.</p>
+            <p class="confidence">Held by the Fraud/Risk Agent - resolve on the <a href="/web/approvals">Approvals</a> page, or override below.</p>
             {% endif %}
         </div>
     </div>
@@ -132,6 +132,19 @@ function streamRiskExplanation(invoiceId) {
 </form>
 
 {% if invoice %}
+{% if current_user.role.value == "owner" %}
+<h3>Change invoice status</h3>
+<p class="confidence">Owner-only manual override - bypasses the Approvals queue. Use with care: this is the same field that gates whether a flagged invoice is treated as safe to pay.</p>
+<form method="post" action="/web/invoices/{{ invoice.id }}/override-status">
+    <select name="new_status" style="display:inline-block;width:auto;">
+        {% for s in ["draft", "pending_review", "validated", "approved", "rejected", "sent"] %}
+        <option value="{{ s }}" {% if invoice.invoice_status.value == s %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+    </select>
+    <button type="submit" class="secondary" style="margin-top:0;">Change status</button>
+</form>
+{% endif %}
+
 {% if invoice.payment_status.value != "paid" %}
 <h3>Communications</h3>
 {% if comms %}

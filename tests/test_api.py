@@ -236,6 +236,54 @@ def test_bulk_mark_paid_marks_selected_invoices_and_skips_unselected(client):
     assert untouched["payment_status"] == "unpaid"
 
 
+def test_owner_can_override_invoice_status_back_and_forth(client):
+    """Regression test for a real gap: invoice_status was write-once
+    outside of creation - the Approvals page can only decide a request
+    once, and there was no other way to change it back. An owner should
+    be able to move an invoice between any status, in either direction."""
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/invoices", json={
+        "direction": "incoming", "invoice_number": "OVERRIDE-1", "vendor_id": 1,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "X", "quantity": 1, "unit_price": 5}],
+    })
+    invoice_id = resp.json()["id"]
+    assert resp.json()["invoice_status"] == "validated"
+
+    resp = client.post(f"/web/invoices/{invoice_id}/override-status", data={"new_status": "rejected"}, follow_redirects=False)
+    assert resp.status_code == 303
+    assert client.get(f"/invoices/{invoice_id}").json()["invoice_status"] == "rejected"
+
+    # And back again - this is the actual gap being fixed, not just a one-way change
+    resp = client.post(f"/web/invoices/{invoice_id}/override-status", data={"new_status": "validated"}, follow_redirects=False)
+    assert resp.status_code == 303
+    assert client.get(f"/invoices/{invoice_id}").json()["invoice_status"] == "validated"
+
+    from app.models.models import AuditLog
+    db = client.session_factory()
+    try:
+        entry = db.query(AuditLog).filter(AuditLog.entity_type == "invoice", AuditLog.action == "status_override").first()
+        assert entry is not None
+        assert entry.performed_by == OWNER_EMAIL
+    finally:
+        db.close()
+
+
+def test_bookkeeper_cannot_override_invoice_status(client):
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/invoices", json={
+        "direction": "incoming", "invoice_number": "OVERRIDE-2", "vendor_id": 1,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "X", "quantity": 1, "unit_price": 5}],
+    })
+    invoice_id = resp.json()["id"]
+
+    _login(client, BOOKKEEPER_EMAIL, BOOKKEEPER_PASSWORD)
+    resp = client.post(f"/web/invoices/{invoice_id}/override-status", data={"new_status": "rejected"})
+    assert resp.status_code == 403
+    assert client.get(f"/invoices/{invoice_id}").json()["invoice_status"] == "validated"
+
+
 def test_create_vendor_via_web_ui_and_view_detail_page(client):
     _login(client, OWNER_EMAIL, OWNER_PASSWORD)
     resp = client.post("/web/vendors", data={"name": "New Vendor Co.", "email": "nv@test.example"}, follow_redirects=False)

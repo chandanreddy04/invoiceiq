@@ -216,6 +216,29 @@ def web_view_invoice(invoice_id: int, request: Request, db: Session = Depends(ge
     )
 
 
+@router.post("/invoices/{invoice_id}/override-status")
+def web_override_invoice_status(
+    invoice_id: int, new_status: str = Form(...), db: Session = Depends(get_db), current_user: User = Depends(require_owner),
+):
+    """A real gap found live: invoice_status was write-once outside of
+    invoice creation - the Approvals page can only decide a *pending*
+    request exactly once (_decide_approval() refuses anything already
+    decided), and the invoice detail page rendered the status as plain
+    text with no field at all. There was no way back if an owner
+    approved something by mistake, or wanted to reopen a rejected
+    invoice. Deliberately owner-only and a separate route from the
+    general edit form (require_login) - a bookkeeper must never be able
+    to self-approve a flagged invoice by editing a field, which is
+    exactly the scenario the whole Approvals gate exists to prevent."""
+    invoice = invoice_service.get_invoice(db, invoice_id)
+    if invoice is not None:
+        old_status = invoice.invoice_status.value
+        invoice.invoice_status = InvoiceStatus(new_status)
+        db.commit()
+        _audit(db, "invoice", invoice.id, "status_override", current_user.email, {"from": old_status, "to": new_status})
+    return RedirectResponse(f"/web/invoices/{invoice_id}", status_code=303)
+
+
 @router.get("/invoices/{invoice_id}/risk-explanation/stream")
 def web_stream_risk_explanation(invoice_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
     """Server-Sent Events endpoint powering the "regenerate live" button
