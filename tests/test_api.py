@@ -284,6 +284,39 @@ def test_bookkeeper_cannot_override_invoice_status(client):
     assert client.get(f"/invoices/{invoice_id}").json()["invoice_status"] == "validated"
 
 
+def test_invoice_detail_page_renders_with_communication_and_shows_full_body(client, mock_ollama_chat):
+    """Regression test for a real Jinja TemplateSyntaxError (mismatched
+    {% if %}/{% endif %} left over from an edit) that made this exact page
+    return a 500 for any invoice with at least one drafted communication -
+    every other test happened to create invoices without ever GETting
+    this page with comms present, so 89 passing tests missed it entirely.
+    Also covers the actual gap reported live: the invoice detail page
+    used to show only a communication's status/subject/date, never the
+    body - you had to leave the page to read what was actually drafted."""
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/invoices", json={
+        "direction": "incoming", "invoice_number": "COMM-DETAIL-1", "vendor_id": 1,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "X", "quantity": 1, "unit_price": 5}],
+    })
+    invoice_id = resp.json()["id"]
+
+    draft_resp = client.post(f"/web/invoices/{invoice_id}/draft-reminder", follow_redirects=False)
+    assert draft_resp.status_code == 303
+
+    detail_resp = client.get(f"/web/invoices/{invoice_id}")
+    assert detail_resp.status_code == 200
+
+    from app.models.models import Communication
+    db = client.session_factory()
+    try:
+        comm = db.query(Communication).filter(Communication.invoice_id == invoice_id).first()
+        assert comm is not None
+        assert comm.body in detail_resp.text  # full content visible on the page itself, not just a summary row
+    finally:
+        db.close()
+
+
 def test_create_vendor_via_web_ui_and_view_detail_page(client):
     _login(client, OWNER_EMAIL, OWNER_PASSWORD)
     resp = client.post("/web/vendors", data={"name": "New Vendor Co.", "email": "nv@test.example"}, follow_redirects=False)

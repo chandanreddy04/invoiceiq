@@ -145,22 +145,21 @@ function streamRiskExplanation(invoiceId) {
 </form>
 {% endif %}
 
-{% if invoice.payment_status.value != "paid" %}
-<h3>Communications</h3>
 {% if comms %}
-<table>
-    <tr><th>Status</th><th>Subject</th><th>To</th><th>Created</th></tr>
-    {% for c in comms %}
-    <tr>
-        <td><span class="badge {{ 'paid' if c.status == 'sent' else 'unpaid' }}">{{ c.status }}</span></td>
-        <td>{{ c.subject }}</td>
-        <td>{{ c.recipient }}</td>
-        <td>{{ c.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
-    </tr>
-    {% endfor %}
-</table>
-<p class="confidence">Review and send drafts from the <a href="/web/communications">Communications</a> page - nothing is ever sent automatically.</p>
+<h3>Communications</h3>
+{% for c in comms %}
+<details style="border:1px solid #ddd; border-radius:6px; padding:0.5rem 0.75rem; margin-bottom:0.5rem;">
+    <summary style="cursor:pointer;">
+        <span class="badge {{ 'paid' if c.status == 'sent' else ('overdue' if c.status == 'rejected' else 'unpaid') }}">{{ c.status }}</span>
+        <strong>{{ c.subject }}</strong> — to {{ c.recipient }}
+        <span class="confidence">{{ c.created_at.strftime("%Y-%m-%d %H:%M") }}</span>
+    </summary>
+    <p style="white-space: pre-wrap; margin-top:0.5rem;">{{ c.body }}</p>
+</details>
+{% endfor %}
+<p class="confidence">Approve, reject, or send drafts on the <a href="/web/approvals">Approvals</a> / <a href="/web/communications">Communications</a> pages - nothing is ever sent automatically.</p>
 {% endif %}
+{% if invoice.payment_status.value != "paid" %}
 <form method="post" action="/web/invoices/{{ invoice.id }}/draft-reminder" style="margin-top:0.5rem;">
     <button type="submit" class="secondary">✉️ Draft a reminder/follow-up (AI-generated, requires approval to send)</button>
 </form>
