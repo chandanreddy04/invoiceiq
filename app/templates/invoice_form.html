@@ -148,13 +148,24 @@ function streamRiskExplanation(invoiceId) {
 {% if comms %}
 <h3>Communications</h3>
 {% for c in comms %}
-<details style="border:1px solid #ddd; border-radius:6px; padding:0.5rem 0.75rem; margin-bottom:0.5rem;">
+<details style="border:1px solid #ddd; border-radius:6px; padding:0.5rem 0.75rem; margin-bottom:0.5rem;" {% if c.status == "draft" %}open{% endif %}>
     <summary style="cursor:pointer;">
         <span class="badge {{ 'paid' if c.status == 'sent' else ('overdue' if c.status == 'rejected' else 'unpaid') }}">{{ c.status }}</span>
         <strong>{{ c.subject }}</strong> — to {{ c.recipient }}
         <span class="confidence">{{ c.created_at.strftime("%Y-%m-%d %H:%M") }}</span>
     </summary>
+    {% if c.status == "draft" %}
+    <form method="post" action="/web/invoices/{{ invoice.id }}/communications/{{ c.id }}/edit" style="margin-top:0.5rem;">
+        <label>Subject</label>
+        <input type="text" name="subject" value="{{ c.subject }}">
+        <label>Body</label>
+        <textarea name="body" rows="6" style="width:100%;">{{ c.body }}</textarea>
+        <button type="submit" class="secondary" style="margin-top:0.4rem;">Save edits</button>
+    </form>
+    <p class="confidence">Editing here only changes the draft - approve or reject it on the <a href="/web/approvals">Approvals</a> page when it's ready.</p>
+    {% else %}
     <p style="white-space: pre-wrap; margin-top:0.5rem;">{{ c.body }}</p>
+    {% endif %}
 </details>
 {% endfor %}
 <p class="confidence">Approve, reject, or send drafts on the <a href="/web/approvals">Approvals</a> / <a href="/web/communications">Communications</a> pages - nothing is ever sent automatically.</p>

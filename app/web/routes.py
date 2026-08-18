@@ -326,6 +326,28 @@ def web_draft_reminder(invoice_id: int, db: Session = Depends(get_db), current_u
     return RedirectResponse(f"/web/invoices/{invoice_id}", status_code=303)
 
 
+@router.post("/invoices/{invoice_id}/communications/{comm_id}/edit")
+async def web_edit_communication(
+    invoice_id: int, comm_id: int, request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login),
+):
+    """Requested directly: a drafted message was previously read-only
+    (approve or reject as-is) - no way to fix a typo or reword something
+    before it goes to Approvals. Same permission level as drafting one in
+    the first place (require_login, not owner-only) since editing text
+    isn't the risk-sensitive action - approving/sending it still is, and
+    that gate (require_owner on /approvals/*) is untouched. Only allowed
+    while status is still "draft"; a sent or rejected message is a
+    historical record and shouldn't be rewritable after the fact."""
+    form = await request.form()
+    comm = db.get(Communication, comm_id)
+    if comm is not None and comm.invoice_id == invoice_id and comm.status == "draft":
+        comm.subject = form.get("subject", comm.subject)
+        comm.body = form.get("body", comm.body)
+        db.commit()
+        _audit(db, "communication", comm.id, "edit", current_user.email)
+    return RedirectResponse(f"/web/invoices/{invoice_id}", status_code=303)
+
+
 # --- Payments / Communications ---------------------------------------------
 
 @router.get("/payments", response_class=HTMLResponse)

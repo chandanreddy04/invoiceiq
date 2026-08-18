@@ -317,6 +317,94 @@ def test_invoice_detail_page_renders_with_communication_and_shows_full_body(clie
         db.close()
 
 
+def test_owner_can_edit_a_draft_communication_before_approval(client, mock_ollama_chat):
+    """Requested directly after the visibility fix: viewing a draft's
+    content isn't enough - a typo or wording issue should be fixable
+    before it goes to Approvals, without regenerating the whole draft."""
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/invoices", json={
+        "direction": "incoming", "invoice_number": "COMM-EDIT-1", "vendor_id": 1,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "X", "quantity": 1, "unit_price": 5}],
+    })
+    invoice_id = resp.json()["id"]
+    client.post(f"/web/invoices/{invoice_id}/draft-reminder")
+
+    from app.models.models import Communication
+    db = client.session_factory()
+    try:
+        comm = db.query(Communication).filter(Communication.invoice_id == invoice_id).first()
+        comm_id = comm.id
+    finally:
+        db.close()
+
+    edit_resp = client.post(
+        f"/web/invoices/{invoice_id}/communications/{comm_id}/edit",
+        data={"subject": "Edited subject line", "body": "Edited body text."},
+        follow_redirects=False,
+    )
+    assert edit_resp.status_code == 303
+
+    db = client.session_factory()
+    try:
+        comm = db.get(Communication, comm_id)
+        assert comm.subject == "Edited subject line"
+        assert comm.body == "Edited body text."
+    finally:
+        db.close()
+
+    from app.models.models import AuditLog
+    db = client.session_factory()
+    try:
+        entry = db.query(AuditLog).filter(AuditLog.entity_type == "communication", AuditLog.action == "edit").first()
+        assert entry is not None
+        assert entry.performed_by == OWNER_EMAIL
+    finally:
+        db.close()
+
+
+def test_editing_a_sent_communication_is_a_no_op(client, mock_ollama_chat):
+    """A sent/rejected message is a historical record - editing it after
+    the fact would let someone quietly rewrite what was already approved
+    and (simulated-)sent, which defeats the point of the approval gate."""
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/invoices", json={
+        "direction": "incoming", "invoice_number": "COMM-EDIT-2", "vendor_id": 1,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "X", "quantity": 1, "unit_price": 5}],
+    })
+    invoice_id = resp.json()["id"]
+    client.post(f"/web/invoices/{invoice_id}/draft-reminder")
+
+    from app.models.models import Communication, ApprovalRequest
+    db = client.session_factory()
+    try:
+        comm = db.query(Communication).filter(Communication.invoice_id == invoice_id).first()
+        comm_id = comm.id
+        original_body = comm.body
+        approval = db.query(ApprovalRequest).filter(
+            ApprovalRequest.type == "send_communication", ApprovalRequest.related_id == comm_id
+        ).first()
+        approval_id = approval.id
+    finally:
+        db.close()
+
+    client.post(f"/web/approvals/{approval_id}/approve")
+
+    client.post(
+        f"/web/invoices/{invoice_id}/communications/{comm_id}/edit",
+        data={"subject": "Should not apply", "body": "Should not apply."},
+    )
+
+    db = client.session_factory()
+    try:
+        comm = db.get(Communication, comm_id)
+        assert comm.status == "sent"
+        assert comm.body == original_body
+    finally:
+        db.close()
+
+
 def test_create_vendor_via_web_ui_and_view_detail_page(client):
     _login(client, OWNER_EMAIL, OWNER_PASSWORD)
     resp = client.post("/web/vendors", data={"name": "New Vendor Co.", "email": "nv@test.example"}, follow_redirects=False)
