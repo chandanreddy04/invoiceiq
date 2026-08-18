@@ -30,9 +30,10 @@ def create_invoice(payload: InvoiceCreate, db: Session = Depends(get_db)):
 def list_invoices(
     direction: InvoiceDirection | None = None,
     payment_status: PaymentStatus | None = None,
+    q: str | None = None,
     db: Session = Depends(get_db),
 ):
-    return invoice_service.list_invoices(db, DEFAULT_ORG_ID, direction, payment_status)
+    return invoice_service.list_invoices(db, DEFAULT_ORG_ID, direction, payment_status, q=q)
 
 
 @router.get("/{invoice_id}", response_model=InvoiceRead)

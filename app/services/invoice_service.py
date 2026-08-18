@@ -8,9 +8,10 @@ two interfaces.
 
 from decimal import Decimal, ROUND_HALF_UP
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
-from app.models.models import Invoice, InvoiceItem, InvoiceDirection, InvoiceStatus, PaymentStatus
+from app.models.models import Invoice, InvoiceItem, InvoiceDirection, InvoiceStatus, PaymentStatus, Vendor, Customer
 from app.schemas.invoice import InvoiceCreate, InvoiceUpdate
 from app.services.validation_service import (
     calculate_invoice_totals,
@@ -29,12 +30,23 @@ def list_invoices(
     org_id: int,
     direction: InvoiceDirection | None = None,
     payment_status: PaymentStatus | None = None,
+    q: str | None = None,
 ):
+    """`q` is a single free-text search box on the Invoices page - matches
+    either the invoice number or the vendor/customer name, whichever
+    applies (an invoice has one or the other, never both)."""
     query = with_items(db.query(Invoice)).filter(Invoice.organization_id == org_id)
     if direction is not None:
         query = query.filter(Invoice.direction == direction)
     if payment_status is not None:
         query = query.filter(Invoice.payment_status == payment_status)
+    if q:
+        term = f"%{q}%"
+        query = (
+            query.outerjoin(Vendor, Invoice.vendor_id == Vendor.id)
+            .outerjoin(Customer, Invoice.customer_id == Customer.id)
+            .filter(or_(Invoice.invoice_number.ilike(term), Vendor.name.ilike(term), Customer.name.ilike(term)))
+        )
     return query.order_by(Invoice.due_date.asc()).all()
 
 

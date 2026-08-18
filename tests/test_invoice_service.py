@@ -125,3 +125,14 @@ def test_delete_invoice_removes_related_rows_no_orphans(db_session, org, vendor,
     assert db_session.query(AgentLog).filter(AgentLog.invoice_id == invoice_id).count() == 0
     from app.models.models import Communication
     assert db_session.query(Communication).filter(Communication.invoice_id == invoice_id).count() == 0
+
+
+def test_list_invoices_search_by_invoice_number_or_party_name(db_session, org, vendor, customer, mock_ollama_chat):
+    invoice_service.create_invoice(db_session, org.id, make_payload(invoice_number="GGM-0847", vendor_id=vendor.id))
+    invoice_service.create_invoice(db_session, org.id, make_payload(invoice_number="SPC-1102", vendor_id=vendor.id))
+
+    by_number = invoice_service.list_invoices(db_session, org.id, q="ggm")
+    assert [i.invoice_number for i in by_number] == ["GGM-0847"]
+
+    by_party = invoice_service.list_invoices(db_session, org.id, q="test vendor")
+    assert len(by_party) == 2  # both invoices are from the same `vendor` fixture

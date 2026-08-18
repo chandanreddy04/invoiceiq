@@ -207,6 +207,33 @@ def test_creating_invoice_via_web_ui_writes_audit_log(client):
         db.close()
 
 
+def test_bulk_mark_paid_marks_selected_invoices_and_skips_unselected(client):
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+
+    ids = []
+    for n in ("BULK-1", "BULK-2", "BULK-3"):
+        resp = client.post("/invoices", json={
+            "direction": "incoming", "invoice_number": n, "vendor_id": 1,
+            "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+            "items": [{"description": "X", "quantity": 1, "unit_price": 5}],
+        })
+        ids.append(resp.json()["id"])
+
+    resp = client.post(
+        "/web/invoices/bulk-mark-paid",
+        data={"invoice_ids": [str(ids[0]), str(ids[1])]},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    marked = client.get(f"/invoices/{ids[0]}").json()
+    also_marked = client.get(f"/invoices/{ids[1]}").json()
+    untouched = client.get(f"/invoices/{ids[2]}").json()
+    assert marked["payment_status"] == "paid"
+    assert also_marked["payment_status"] == "paid"
+    assert untouched["payment_status"] == "unpaid"
+
+
 def test_json_api_is_not_gated_by_login(client):
     """Documented limitation (see README): the JSON API has no auth of
     its own, unlike the web UI. Asserted explicitly (not just implied

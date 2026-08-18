@@ -6,6 +6,10 @@
 
 <form method="get" action="/web/invoices" class="row">
     <div>
+        <label>Search</label>
+        <input type="text" name="q" value="{{ q or '' }}" placeholder="Invoice # or vendor/customer name">
+    </div>
+    <div>
         <label>Direction</label>
         <select name="direction" onchange="this.form.submit()">
             <option value="" {% if not direction %}selected{% endif %}>All</option>
@@ -22,28 +26,41 @@
             {% endfor %}
         </select>
     </div>
+    <div style="align-self:flex-end;">
+        <button type="submit">Search</button>
+    </div>
 </form>
 
 {% if invoices %}
-<table>
-    <tr>
-        <th>ID</th><th>Direction</th><th>Invoice #</th><th>Party</th><th>Due date</th><th>Total</th><th>Payment</th><th>Status</th><th>Risk</th>
-    </tr>
-    {% for inv in invoices %}
-    <tr>
-        <td><a href="/web/invoices/{{ inv.id }}">{{ inv.id }}</a></td>
-        <td>{{ inv.direction.value }}</td>
-        <td>{{ inv.invoice_number }}</td>
-        <td>{{ inv.vendor.name if inv.vendor else (inv.customer.name if inv.customer else "-") }}</td>
-        <td>{{ inv.due_date }}</td>
-        <td>{{ inv.total }} {{ inv.currency }}</td>
-        <td><span class="badge {{ inv.payment_status.value }}">{{ inv.payment_status.value }}</span></td>
-        <td>{{ inv.invoice_status.value }}</td>
-        <td>{% if inv.risk_score is not none %}<span class="badge {{ 'overdue' if inv.risk_score|float >= 0.7 else '' }}">{{ (inv.risk_score|float * 100)|round }}%</span>{% else %}-{% endif %}</td>
-    </tr>
-    {% endfor %}
-</table>
+<form method="post" action="/web/invoices/bulk-mark-paid" id="bulk-form">
+    <input type="hidden" name="direction" value="{{ direction or '' }}">
+    <input type="hidden" name="payment_status" value="{{ payment_status or '' }}">
+    <input type="hidden" name="q" value="{{ q or '' }}">
+    <p>
+        <button type="submit" onclick="return confirm('Mark selected invoices as paid?')">Mark selected as paid</button>
+    </p>
+    <table>
+        <tr>
+            <th><input type="checkbox" id="select-all" onclick="document.querySelectorAll('.row-check').forEach(c => c.checked = this.checked)"></th>
+            <th>ID</th><th>Direction</th><th>Invoice #</th><th>Party</th><th>Due date</th><th>Total</th><th>Payment</th><th>Status</th><th>Risk</th>
+        </tr>
+        {% for inv in invoices %}
+        <tr>
+            <td><input type="checkbox" class="row-check" name="invoice_ids" value="{{ inv.id }}" {% if inv.payment_status.value == "paid" %}disabled{% endif %}></td>
+            <td><a href="/web/invoices/{{ inv.id }}">{{ inv.id }}</a></td>
+            <td>{{ inv.direction.value }}</td>
+            <td>{{ inv.invoice_number }}</td>
+            <td>{{ inv.vendor.name if inv.vendor else (inv.customer.name if inv.customer else "-") }}</td>
+            <td>{{ inv.due_date }}</td>
+            <td>{{ inv.total }} {{ inv.currency }}</td>
+            <td><span class="badge {{ inv.payment_status.value }}">{{ inv.payment_status.value }}</span></td>
+            <td>{{ inv.invoice_status.value }}</td>
+            <td>{% if inv.risk_score is not none %}<span class="badge {{ 'overdue' if inv.risk_score|float >= 0.7 else '' }}">{{ (inv.risk_score|float * 100)|round }}%</span>{% else %}-{% endif %}</td>
+        </tr>
+        {% endfor %}
+    </table>
+</form>
 {% else %}
-<p>No invoices yet. <a href="/web/invoices/new">Create one</a> or <a href="/web/upload">upload a PDF</a>.</p>
+<p>No invoices matched. <a href="/web/invoices">Clear filters</a>, or <a href="/web/invoices/new">create one</a>, or <a href="/web/upload">upload a PDF</a>.</p>
 {% endif %}
 {% endblock %}

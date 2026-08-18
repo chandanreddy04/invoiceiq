@@ -24,7 +24,7 @@ from app.core.config import UPLOAD_DIR, MAX_UPLOAD_SIZE_BYTES, MAX_UPLOAD_SIZE_M
 from app.utils.time import utcnow_naive
 from app.database.session import get_db
 from app.models.models import (
-    Customer, Vendor, InvoiceDirection, PaymentStatus, InvoiceStatus,
+    Invoice, Customer, Vendor, InvoiceDirection, PaymentStatus, InvoiceStatus,
     FraudFlag, AgentLog, Communication, ApprovalRequest, User, AuditLog,
 )
 from app.schemas.invoice import InvoiceCreate, InvoiceItemCreate, InvoiceUpdate
@@ -112,6 +112,7 @@ def web_list_invoices(
     request: Request,
     direction: str | None = None,
     payment_status: str | None = None,
+    q: str | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_login),
 ):
@@ -120,11 +121,29 @@ def web_list_invoices(
         DEFAULT_ORG_ID,
         InvoiceDirection(direction) if direction else None,
         PaymentStatus(payment_status) if payment_status else None,
+        q=q,
     )
     return templates.TemplateResponse(
         "invoices_list.html",
-        {"request": request, "invoices": invoices, "direction": direction, "payment_status": payment_status, "current_user": current_user},
+        {"request": request, "invoices": invoices, "direction": direction, "payment_status": payment_status, "q": q, "current_user": current_user},
     )
+
+
+@router.post("/invoices/bulk-mark-paid")
+async def web_bulk_mark_paid(request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    form = await request.form()
+    invoice_ids = [int(v) for v in form.getlist("invoice_ids")]
+    for invoice_id in invoice_ids:
+        invoice = db.query(Invoice).filter(Invoice.id == invoice_id, Invoice.organization_id == DEFAULT_ORG_ID).first()
+        if invoice is None:
+            continue
+        invoice_service.update_invoice(db, invoice, InvoiceUpdate(payment_status=PaymentStatus.paid))
+        _audit(db, "invoice", invoice.id, "bulk_mark_paid", current_user.email)
+
+    from urllib.parse import urlencode
+    keep = {k: v for k in ("direction", "payment_status", "q") if (v := form.get(k))}
+    qs = urlencode(keep)
+    return RedirectResponse(f"/web/invoices{'?' + qs if qs else ''}", status_code=303)
 
 
 @router.get("/invoices/new", response_class=HTMLResponse)
