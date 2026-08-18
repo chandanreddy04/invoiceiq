@@ -16,7 +16,7 @@ import uuid
 from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, Request, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
@@ -31,7 +31,7 @@ from app.schemas.invoice import InvoiceCreate, InvoiceItemCreate, InvoiceUpdate
 from app.schemas.party import VendorCreate, CustomerCreate
 from app.services import invoice_service, extraction_service, llm_extraction_service
 from app.services.validation_service import InvoiceValidationError
-from app.agents import orchestrator, communication_agent, payment_ap_agent
+from app.agents import orchestrator, communication_agent, payment_ap_agent, fraud_risk_agent
 from app.tools import invoice_tools
 from app.security.auth import verify_password, create_session_token
 from app.security.deps import require_login, require_owner, get_current_user, SESSION_COOKIE_NAME
@@ -216,6 +216,34 @@ def web_view_invoice(invoice_id: int, request: Request, db: Session = Depends(ge
     )
 
 
+@router.get("/invoices/{invoice_id}/risk-explanation/stream")
+def web_stream_risk_explanation(invoice_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    """Server-Sent Events endpoint powering the "regenerate live" button
+    on the invoice detail page. Re-narrates the SAME already-computed
+    risk_score/reasons from the most recent FraudFlag row - never
+    recomputes the verdict, only re-generates the explanation sentence,
+    token by token, so a person watching isn't staring at a blank space
+    for the 15-30s a real local model call takes."""
+    fraud_flag = (
+        db.query(FraudFlag).filter(FraudFlag.invoice_id == invoice_id).order_by(FraudFlag.created_at.desc()).first()
+    )
+
+    def _generate():
+        if fraud_flag is None:
+            yield "data: No risk assessment exists for this invoice.\n\n"
+            yield "event: done\ndata: \n\n"
+            return
+        reasons = json.loads(fraud_flag.reasons_json) if fraud_flag.reasons_json else []
+        try:
+            for chunk in fraud_risk_agent.explain_risk_with_llm_stream(float(fraud_flag.risk_score), reasons):
+                yield f"data: {chunk.replace(chr(10), ' ')}\n\n"
+        except llm_extraction_service.LLMUnavailableError:
+            yield f"data: [LLM unavailable] {' '.join(reasons)}\n\n"
+        yield "event: done\ndata: \n\n"
+
+    return StreamingResponse(_generate(), media_type="text/event-stream")
+
+
 @router.post("/invoices/{invoice_id}", response_class=HTMLResponse)
 async def web_update_invoice(invoice_id: int, request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
     form = await request.form()
@@ -281,6 +309,24 @@ def web_draft_reminder(invoice_id: int, db: Session = Depends(get_db), current_u
 def web_payments(request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
     result = payment_ap_agent.prioritize_payments(db, DEFAULT_ORG_ID)
     return templates.TemplateResponse("payments.html", {"request": request, "result": result, "current_user": current_user})
+
+
+@router.get("/payments/narration/stream")
+def web_stream_payment_narration(db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    """SSE twin of web_payments()'s narration paragraph. Recomputes the
+    same ranking (rank_unpaid_invoices() is deterministic - no LLM in
+    it) and streams a fresh narration of it live."""
+    ranked, held = payment_ap_agent.rank_unpaid_invoices(db, DEFAULT_ORG_ID)
+
+    def _generate():
+        try:
+            for chunk in payment_ap_agent.explain_payments_stream(ranked, held):
+                yield f"data: {chunk.replace(chr(10), ' ')}\n\n"
+        except llm_extraction_service.LLMUnavailableError:
+            yield "data: [LLM unavailable]\n\n"
+        yield "event: done\ndata: \n\n"
+
+    return StreamingResponse(_generate(), media_type="text/event-stream")
 
 
 @router.get("/communications", response_class=HTMLResponse)

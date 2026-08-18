@@ -7,8 +7,22 @@
 <div class="flash {{ 'error' if fraud_flag.risk_score|float >= 0.7 else ('success' if fraud_flag.risk_score|float < 0.3 else '') }}" style="{% if fraud_flag.risk_score|float >= 0.3 and fraud_flag.risk_score|float < 0.7 %}background:#fff3cd;color:#856404;{% endif %}">
     <strong>Fraud/Risk Agent: {{ (fraud_flag.risk_score|float * 100)|round }}% risk</strong>
     {% if invoice.invoice_status.value == "pending_review" %}(invoice held for review - not auto-validated){% endif %}
-    <br>{{ fraud_flag.explanation }}
+    <br><span id="risk-explanation">{{ fraud_flag.explanation }}</span>
+    <br><button type="button" id="regen-risk-btn" onclick="streamRiskExplanation({{ invoice.id }})" style="margin-top:0.5rem;font-size:0.85em;">🔄 Regenerate explanation (live)</button>
 </div>
+<script>
+function streamRiskExplanation(invoiceId) {
+    const el = document.getElementById("risk-explanation");
+    const btn = document.getElementById("regen-risk-btn");
+    el.textContent = "";
+    btn.disabled = true;
+    btn.textContent = "Generating...";
+    const source = new EventSource(`/web/invoices/${invoiceId}/risk-explanation/stream`);
+    source.onmessage = (event) => { el.textContent += event.data; };
+    source.addEventListener("done", () => { source.close(); btn.disabled = false; btn.textContent = "🔄 Regenerate explanation (live)"; });
+    source.onerror = () => { source.close(); btn.disabled = false; btn.textContent = "🔄 Regenerate explanation (live)"; };
+}
+</script>
 {% endif %}
 
 <form method="post" action="{{ form_action }}">

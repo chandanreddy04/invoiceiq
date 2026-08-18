@@ -4,7 +4,23 @@
 <h1>💰 Payment Priorities</h1>
 <p class="confidence">The Payment/AP Agent only recommends - it never pays anything. Mark an invoice paid yourself on its own page when you're ready.</p>
 
-<div class="flash success">{{ result.explanation }}</div>
+<div class="flash success">
+    <span id="payment-narration">{{ result.explanation }}</span>
+    <br><button type="button" id="regen-narration-btn" onclick="streamPaymentNarration()" style="margin-top:0.5rem;font-size:0.85em;">🔄 Regenerate explanation (live)</button>
+</div>
+<script>
+function streamPaymentNarration() {
+    const el = document.getElementById("payment-narration");
+    const btn = document.getElementById("regen-narration-btn");
+    el.textContent = "";
+    btn.disabled = true;
+    btn.textContent = "Generating...";
+    const source = new EventSource("/web/payments/narration/stream");
+    source.onmessage = (event) => { el.textContent += event.data; };
+    source.addEventListener("done", () => { source.close(); btn.disabled = false; btn.textContent = "🔄 Regenerate explanation (live)"; });
+    source.onerror = () => { source.close(); btn.disabled = false; btn.textContent = "🔄 Regenerate explanation (live)"; };
+}
+</script>
 
 <h3>Recommended payment order</h3>
 {% if result.recommended %}

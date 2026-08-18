@@ -73,7 +73,9 @@ def mock_ollama_chat(monkeypatch):
     analysis agents) with a canned response, so pipeline/integration
     tests run in milliseconds instead of ~30s of real inference."""
 
-    def _fake_chat(model, messages, format=None, options=None):
+    def _fake_chat(model, messages, format=None, options=None, stream=False):
+        if stream:
+            return iter([{"message": {"content": "Mocked "}}, {"message": {"content": "explanation text."}}])
         if format is not None:
             # A structured-output call - return something that validates
             # against most of our schemas: empty-ish but well-typed.

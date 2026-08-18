@@ -17,6 +17,7 @@ already rely on (same as Section 38's original failure-handling design).
 
 import json
 import logging
+from typing import Iterator
 
 from app.core.config import GROQ_API_KEY, GROQ_MODEL, OLLAMA_MODEL
 
@@ -39,6 +40,39 @@ def chat(messages: list[dict], schema: dict | None = None, temperature: float = 
     if GROQ_API_KEY:
         return _chat_groq(messages, schema, temperature)
     return _chat_ollama(messages, schema, temperature)
+
+
+def chat_stream(messages: list[dict], temperature: float = 0.0) -> Iterator[str]:
+    """Yields the model's reply incrementally, token-chunk by token-chunk,
+    instead of waiting for the full response. Only meaningful for
+    free-text prose a human reads live (Fraud/Risk's explanation, Payment/AP's
+    narration) - never used for structured-output calls, since a partial
+    JSON object isn't useful to show mid-generation and every structured
+    caller already validates the complete result against a Pydantic model
+    afterward. No `schema` parameter for that reason.
+
+    Ollama streams genuinely incrementally. Groq's REST API also supports
+    SSE streaming, but implementing and testing that path requires a real
+    GROQ_API_KEY this project doesn't have during development - so the
+    Groq branch yields the complete response as a single chunk (correct
+    output, no incremental UX) rather than shipping an SSE parser that
+    was never actually run against a live Groq response."""
+    if GROQ_API_KEY:
+        yield _chat_groq(messages, schema=None, temperature=temperature)
+        return
+    yield from _chat_ollama_stream(messages, temperature)
+
+
+def _chat_ollama_stream(messages: list[dict], temperature: float) -> Iterator[str]:
+    import ollama
+
+    try:
+        for chunk in ollama.chat(model=OLLAMA_MODEL, messages=messages, options={"temperature": temperature}, stream=True):
+            content = chunk.get("message", {}).get("content", "")
+            if content:
+                yield content
+    except Exception as e:
+        raise LLMUnavailableError(str(e)) from e
 
 
 def _chat_ollama(messages: list[dict], schema: dict | None, temperature: float) -> str:

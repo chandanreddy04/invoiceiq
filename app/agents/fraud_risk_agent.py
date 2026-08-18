@@ -142,22 +142,37 @@ def score_risk(signals: dict) -> tuple[float, list[str]]:
     return min(risk, 1.0), reasons
 
 
-def explain_risk_with_llm(invoice: Invoice, risk_score: float, reasons: list[str]) -> str:
-    """The one and only LLM call in this agent. Turns the already-decided
-    score + reasons into a natural sentence. If the LLM is unavailable,
-    the caller falls back to joining `reasons` directly - the agent's
-    verdict does not depend on this call succeeding."""
-    prompt = (
+def _risk_explanation_prompt(risk_score: float, reasons: list[str]) -> str:
+    return (
         f"An invoice was scored {risk_score:.0%} risk based on these factors:\n"
         + "\n".join(f"- {r}" for r in reasons)
         + "\n\nWrite one short, plain-English paragraph explaining this risk assessment "
         "to a small business owner. Do not invent any facts not listed above."
     )
+
+
+def explain_risk_with_llm(invoice: Invoice, risk_score: float, reasons: list[str]) -> str:
+    """The one and only LLM call in this agent. Turns the already-decided
+    score + reasons into a natural sentence. If the LLM is unavailable,
+    the caller falls back to joining `reasons` directly - the agent's
+    verdict does not depend on this call succeeding."""
+    prompt = _risk_explanation_prompt(risk_score, reasons)
     try:
         return chat(messages=[{"role": "user", "content": prompt}]).strip()
     except LLMUnavailableError as e:
         logger.warning("Fraud explanation LLM call failed, falling back to raw reasons: %s", e)
         raise
+
+
+def explain_risk_with_llm_stream(risk_score: float, reasons: list[str]):
+    """Same prompt as explain_risk_with_llm(), but yields the explanation
+    incrementally - used by the "regenerate live" button on the invoice
+    detail page so a person watching doesn't stare at a blank space for
+    the 15-30s a real local model call takes. The stored FraudFlag.explanation
+    from run_fraud_check() is unaffected either way; this only powers the
+    optional live re-generation, it never overwrites the saved verdict."""
+    from app.services.llm_client import chat_stream
+    yield from chat_stream(messages=[{"role": "user", "content": _risk_explanation_prompt(risk_score, reasons)}])
 
 
 def run_fraud_check(db: Session, invoice: Invoice) -> FraudFlag | None:

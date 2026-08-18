@@ -46,7 +46,11 @@ def compute_priority(invoice: Invoice) -> tuple[float, bool]:
     return float(score), False
 
 
-def prioritize_payments(db: Session, org_id: int) -> dict:
+def rank_unpaid_invoices(db: Session, org_id: int) -> tuple[list, list]:
+    """The ranking half of prioritize_payments(), split out so the
+    "regenerate live" streaming endpoint can recompute the exact same
+    (score, Invoice) ranking without duplicating this query, then narrate
+    it separately from the LLM's fixed-text explanation."""
     unpaid = (
         db.query(Invoice)
         .filter(
@@ -62,12 +66,27 @@ def prioritize_payments(db: Session, org_id: int) -> dict:
         score, is_held = compute_priority(inv)
         (held if is_held else ranked).append((score, inv))
     ranked.sort(key=lambda x: x[0], reverse=True)
+    return ranked, held
 
+
+def prioritize_payments(db: Session, org_id: int) -> dict:
+    ranked, held = rank_unpaid_invoices(db, org_id)
     return {
         "recommended": [inv for _, inv in ranked],
         "held_for_review": [inv for _, inv in held],
         "explanation": _explain(ranked, held),
     }
+
+
+def _narration_prompt(ranked: list, held: list) -> str:
+    summary_lines = [f"{inv.invoice_number} (${inv.total}, due {inv.due_date})" for _, inv in ranked[:5]]
+    held_lines = [f"{inv.invoice_number} (${inv.total}, risk {float(inv.risk_score):.0%})" for _, inv in held]
+    return (
+        "Write one short paragraph recommending a payment order for a small business "
+        f"owner. Pay these in this order (most urgent first): {', '.join(summary_lines) or 'none'}. "
+        f"Hold these back and do not pay yet, pending fraud review: {', '.join(held_lines) or 'none'}. "
+        "Do not invent any other facts."
+    )
 
 
 def _explain(ranked: list, held: list) -> str:
@@ -76,15 +95,7 @@ def _explain(ranked: list, held: list) -> str:
 
     lines = []
     try:
-        summary_lines = [f"{inv.invoice_number} (${inv.total}, due {inv.due_date})" for _, inv in ranked[:5]]
-        held_lines = [f"{inv.invoice_number} (${inv.total}, risk {float(inv.risk_score):.0%})" for _, inv in held]
-        prompt = (
-            "Write one short paragraph recommending a payment order for a small business "
-            f"owner. Pay these in this order (most urgent first): {', '.join(summary_lines) or 'none'}. "
-            f"Hold these back and do not pay yet, pending fraud review: {', '.join(held_lines) or 'none'}. "
-            "Do not invent any other facts."
-        )
-        return chat(messages=[{"role": "user", "content": prompt}]).strip()
+        return chat(messages=[{"role": "user", "content": _narration_prompt(ranked, held)}]).strip()
     except LLMUnavailableError as e:
         logger.warning("Payment explanation LLM call failed, using plain summary: %s", e)
         for _, inv in ranked:
@@ -92,3 +103,15 @@ def _explain(ranked: list, held: list) -> str:
         for _, inv in held:
             lines.append(f"HOLD {inv.invoice_number} - flagged {float(inv.risk_score):.0%} risk, needs review first.")
         return " ".join(lines) if lines else "No unpaid vendor invoices right now."
+
+
+def explain_payments_stream(ranked: list, held: list):
+    """Streaming twin of _explain()'s LLM call, for the "regenerate live"
+    button on the Payments page. ranked/held must be the same
+    (score, Invoice) tuples prioritize_payments() already computed - this
+    never re-runs the ranking, only re-narrates it live."""
+    from app.services.llm_client import chat_stream
+    if not ranked and not held:
+        yield "No unpaid vendor invoices right now."
+        return
+    yield from chat_stream(messages=[{"role": "user", "content": _narration_prompt(ranked, held)}])

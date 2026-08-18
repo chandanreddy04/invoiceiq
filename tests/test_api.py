@@ -44,8 +44,10 @@ def client(monkeypatch):
     db.commit()
     db.close()
 
-    def _fake_chat(model, messages, format=None, options=None):
+    def _fake_chat(model, messages, format=None, options=None, stream=False):
         import json
+        if stream:
+            return iter([{"message": {"content": "mocked "}}, {"message": {"content": "stream"}}])
         if format is not None:
             props = format.get("properties", {})
             fake = {}
@@ -294,6 +296,36 @@ def test_audit_log_page_lists_entries_and_filters_by_entity_type(client):
 
     filtered_out = client.get("/web/audit-log", params={"entity_type": "communication"})
     assert "Audit Test Vendor" not in filtered_out.text
+
+
+def test_risk_explanation_stream_returns_sse_chunks(client):
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/invoices", json={
+        "direction": "incoming", "invoice_number": "STREAM-1", "vendor_id": 1,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "X", "quantity": 1, "unit_price": 5}],
+    })
+    invoice_id = resp.json()["id"]
+
+    stream_resp = client.get(f"/web/invoices/{invoice_id}/risk-explanation/stream")
+    assert stream_resp.status_code == 200
+    assert stream_resp.headers["content-type"].startswith("text/event-stream")
+    assert "data: mocked" in stream_resp.text
+    assert "event: done" in stream_resp.text
+
+
+def test_payment_narration_stream_returns_sse_chunks(client):
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    client.post("/invoices", json={
+        "direction": "incoming", "invoice_number": "STREAM-PAY-1", "vendor_id": 1,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-05", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "X", "quantity": 1, "unit_price": 5}],
+    })
+
+    stream_resp = client.get("/web/payments/narration/stream")
+    assert stream_resp.status_code == 200
+    assert stream_resp.headers["content-type"].startswith("text/event-stream")
+    assert "event: done" in stream_resp.text
 
 
 def test_json_api_is_not_gated_by_login(client):
