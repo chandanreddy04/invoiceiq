@@ -110,7 +110,7 @@ scripts/
 ├── generate_sample_invoices.py     3 sample PDFs for manually testing upload
 ├── smoke_test.py                     Post-install environment verification
 └── evaluate_agents.py                 Real measured agent accuracy numbers
-tests/                    72 tests (68 fast + 4 real-LLM)
+tests/                    95 tests (86 fast + 4 real-LLM + 5 real-browser/e2e)
 docs/architecture.md      Full Mermaid diagrams + LLM/agent/tool/workflow distinction
 data/                      SQLite database, uploaded/generated invoices (gitignored except placeholders)
 logs/                       runtime + evaluation logs (gitignored except placeholder)
@@ -268,11 +268,12 @@ All five reproducible end-to-end demonstrations, each of which was actually run 
 ## Testing
 
 ```bash
-pytest                    # all 72 tests (fast + real-LLM), ~70s
-pytest -m "not llm"       # just the 68 fast/deterministic ones, ~3-10s
+pytest                            # all 95 tests (fast + real-LLM + real-browser), ~2-3 min
+pytest -m "not llm and not e2e"   # just the 86 fast/deterministic ones, ~10s
+pytest -m e2e                     # 5 real-browser tests via Playwright (needs requirements-dev.txt + `playwright install chromium`)
 ```
 
-GitHub Actions (`.github/workflows/test.yml`) runs the fast suite only — CI does not require a local LLM.
+GitHub Actions (`.github/workflows/test.yml`) runs the fast suite only — CI does not require a local LLM or a browser.
 
 ## Evaluation Results
 

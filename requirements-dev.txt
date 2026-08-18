@@ -1,0 +1,12 @@
+# Optional, dev/test-only dependencies - not needed to run the app itself.
+# Install with: pip install -r requirements-dev.txt
+# Then: python -m playwright install chromium
+#
+# Powers tests/test_e2e_browser.py (marked @pytest.mark.e2e), which spins
+# up a real subprocess server and clicks through the actual rendered HTML
+# with a real Chromium browser - the one thing the rest of the test suite
+# (TestClient, no real browser) never does. Skipped automatically if these
+# aren't installed (pytest.importorskip), and excluded from the default
+# fast run and CI (`pytest -m "not llm and not e2e"`).
+playwright==1.62.0
+pytest-playwright==0.9.0

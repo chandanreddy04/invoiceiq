@@ -22,5 +22,5 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run fast test suite (no local LLM required)
-        run: pytest -m "not llm" -v
+      - name: Run fast test suite (no local LLM or browser required)
+        run: pytest -m "not llm and not e2e" -v
