@@ -106,11 +106,25 @@ def test_generate_financial_summary_math(db_session, org, vendor, customer):
     db_session.commit()
 
     summary = generate_financial_summary(db_session, org.id)
-    assert summary["total_payable_outstanding"] == Decimal("300")
-    assert summary["total_receivable_outstanding"] == Decimal("50")
+    assert summary["total_payable_outstanding_by_currency"] == {"USD": Decimal("300")}
+    assert summary["total_receivable_outstanding_by_currency"] == {"USD": Decimal("50")}
     assert summary["count_overdue"] == 1
-    assert summary["overdue_total"] == Decimal("200")
+    assert summary["overdue_total_by_currency"] == {"USD": Decimal("200")}
     assert summary["count_invoices"] == 3
+
+
+def test_generate_financial_summary_keeps_currencies_separate(db_session, org, vendor):
+    """Regression test for a real bug: totals used to sum every invoice's
+    .total regardless of currency, so a $100 USD invoice and a EUR 100
+    invoice would have silently added up to a meaningless "200"."""
+    usd_invoice = make_invoice(org.id, vendor.id, None, InvoiceDirection.incoming, "USD-1", 100, date.today() + timedelta(days=10))
+    eur_invoice = make_invoice(org.id, vendor.id, None, InvoiceDirection.incoming, "EUR-1", 100, date.today() + timedelta(days=10))
+    eur_invoice.currency = "EUR"
+    db_session.add_all([usd_invoice, eur_invoice])
+    db_session.commit()
+
+    summary = generate_financial_summary(db_session, org.id)
+    assert summary["total_payable_outstanding_by_currency"] == {"USD": Decimal("100"), "EUR": Decimal("100")}
 
 
 def test_search_invoices_filters_by_party_name_vendor(db_session, org, vendor, customer):

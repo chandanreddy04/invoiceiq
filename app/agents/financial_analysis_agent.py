@@ -90,11 +90,11 @@ def format_answer(intent: QueryIntent, results) -> str:
         s = results
         lines = [
             f"You have {s['count_invoices']} invoice(s) total.",
-            f"Outstanding payable (you owe): ${s['total_payable_outstanding']:.2f}.",
-            f"Outstanding receivable (owed to you): ${s['total_receivable_outstanding']:.2f}.",
+            f"Outstanding payable (you owe): {invoice_tools.format_money_by_currency(s['total_payable_outstanding_by_currency'])}.",
+            f"Outstanding receivable (owed to you): {invoice_tools.format_money_by_currency(s['total_receivable_outstanding_by_currency'])}.",
         ]
         if s["count_overdue"]:
-            lines.append(f"{s['count_overdue']} invoice(s) are overdue, totaling ${s['overdue_total']:.2f}.")
+            lines.append(f"{s['count_overdue']} invoice(s) are overdue, totaling {invoice_tools.format_money_by_currency(s['overdue_total_by_currency'])}.")
         else:
             lines.append("Nothing is currently overdue.")
         return " ".join(lines)

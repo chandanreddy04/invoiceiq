@@ -37,6 +37,7 @@ from app.security.deps import require_login, require_owner, get_current_user, SE
 
 router = APIRouter(prefix="/web", tags=["web"])
 templates = Jinja2Templates(directory="app/templates")
+templates.env.filters["money"] = invoice_tools.format_money_by_currency
 logger = logging.getLogger(__name__)
 
 DEFAULT_ORG_ID = 1

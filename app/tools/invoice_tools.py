@@ -94,23 +94,70 @@ def check_duplicate_invoice(
     return query.first()
 
 
+def _totals_by_currency(invoices: list[Invoice]) -> dict[str, Decimal]:
+    """Sums Invoice.total grouped by currency - never mix a $100 invoice
+    and a €100 invoice into one meaningless "$200" figure. Real bug found
+    while auditing this file: every caller of this used to sum .total
+    across all invoices regardless of currency, silently, because the
+    original synthetic dataset happened to be all-USD."""
+    totals: dict[str, Decimal] = {}
+    for inv in invoices:
+        totals[inv.currency] = totals.get(inv.currency, Decimal("0")) + inv.total
+    return totals
+
+
 def generate_financial_summary(db: Session, org_id: int) -> dict:
     all_invoices = db.query(Invoice).filter(Invoice.organization_id == org_id).all()
     incoming = [i for i in all_invoices if i.direction == InvoiceDirection.incoming]
     outgoing = [i for i in all_invoices if i.direction == InvoiceDirection.outgoing]
 
-    def unpaid_total(invoices):
-        return sum((i.total for i in invoices if i.payment_status != PaymentStatus.paid), Decimal("0"))
+    def unpaid(invoices):
+        return [i for i in invoices if i.payment_status != PaymentStatus.paid]
 
     overdue = [i for i in all_invoices if i.due_date < date.today() and i.payment_status != PaymentStatus.paid]
 
     return {
-        "total_payable_outstanding": unpaid_total(incoming),
-        "total_receivable_outstanding": unpaid_total(outgoing),
+        "total_payable_outstanding_by_currency": _totals_by_currency(unpaid(incoming)),
+        "total_receivable_outstanding_by_currency": _totals_by_currency(unpaid(outgoing)),
         "count_overdue": len(overdue),
-        "overdue_total": sum((i.total for i in overdue), Decimal("0")),
+        "overdue_total_by_currency": _totals_by_currency(overdue),
         "count_invoices": len(all_invoices),
     }
+
+
+def format_money_by_currency(totals: dict[str, Decimal]) -> str:
+    """Renders a {currency: amount} dict as human text - "$300.00" for the
+    common single-currency case, "$300.00 + €50.00" if more than one
+    currency is actually present. Never adds different currencies
+    together into one number."""
+    if not totals:
+        return "$0.00"
+    parts = [f"{amount:.2f} {currency}" for currency, amount in sorted(totals.items())]
+    return " + ".join(parts)
+
+
+AGING_BUCKETS = [("0-30", 0, 30), ("31-60", 31, 60), ("61-90", 61, 90), ("90+", 91, None)]
+
+
+def compute_aging_report(overdue_invoices: list[Invoice]) -> list[dict]:
+    """Standard AR/AP aging breakdown: how many overdue invoices fall into
+    each days-overdue bucket, and how much they total (per currency -
+    see _totals_by_currency). Bucketed by days overdue rather than a
+    single "overdue" flag, since a 5-day-late invoice and a 120-day-late
+    one need very different attention."""
+    today = date.today()
+    buckets = []
+    for label, lo, hi in AGING_BUCKETS:
+        in_bucket = [
+            inv for inv in overdue_invoices
+            if (today - inv.due_date).days >= lo and (hi is None or (today - inv.due_date).days <= hi)
+        ]
+        buckets.append({
+            "label": label,
+            "count": len(in_bucket),
+            "total_by_currency": _totals_by_currency(in_bucket),
+        })
+    return buckets
 
 
 def get_dashboard_stats(db: Session, org_id: int) -> dict:
@@ -125,6 +172,9 @@ def get_dashboard_stats(db: Session, org_id: int) -> dict:
 
     paid = [i for i in all_invoices if i.payment_status == PaymentStatus.paid]
     suspicious = [i for i in all_invoices if i.risk_score is not None and float(i.risk_score) >= 0.5]
+    overdue_invoices = [
+        i for i in all_invoices if i.due_date < date.today() and i.payment_status != PaymentStatus.paid
+    ]
     # ApprovalRequest has no org_id column - fine for a single-organization
     # demo, would need scoping if this became multi-tenant.
     pending_approvals = db.query(ApprovalRequest).filter(ApprovalRequest.status == "pending").count()
@@ -132,7 +182,8 @@ def get_dashboard_stats(db: Session, org_id: int) -> dict:
     return {
         **summary,
         "count_paid": len(paid),
-        "total_paid_amount": sum((i.total for i in paid), Decimal("0")),
+        "total_paid_amount_by_currency": _totals_by_currency(paid),
         "suspicious_invoices": sorted(suspicious, key=lambda i: float(i.risk_score), reverse=True),
         "pending_approvals": pending_approvals,
+        "aging_report": compute_aging_report(overdue_invoices),
     }

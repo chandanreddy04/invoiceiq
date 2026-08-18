@@ -12,20 +12,20 @@
     <div style="border:1px solid #ddd; border-radius:6px; padding:1rem;">
         <div style="font-size:0.85em; color:#666;">Paid</div>
         <div style="font-size:1.8em; font-weight:700;">{{ stats.count_paid }}</div>
-        <div style="font-size:0.85em; color:#666;">${{ "%.2f"|format(stats.total_paid_amount) }}</div>
+        <div style="font-size:0.85em; color:#666;">{{ stats.total_paid_amount_by_currency|money }}</div>
     </div>
     <div style="border:1px solid #ddd; border-radius:6px; padding:1rem;">
         <div style="font-size:0.85em; color:#666;">Outstanding payable</div>
-        <div style="font-size:1.8em; font-weight:700;">${{ "%.2f"|format(stats.total_payable_outstanding) }}</div>
+        <div style="font-size:1.8em; font-weight:700;">{{ stats.total_payable_outstanding_by_currency|money }}</div>
     </div>
     <div style="border:1px solid #ddd; border-radius:6px; padding:1rem;">
         <div style="font-size:0.85em; color:#666;">Outstanding receivable</div>
-        <div style="font-size:1.8em; font-weight:700;">${{ "%.2f"|format(stats.total_receivable_outstanding) }}</div>
+        <div style="font-size:1.8em; font-weight:700;">{{ stats.total_receivable_outstanding_by_currency|money }}</div>
     </div>
     <div style="border:1px solid #f8d7da; background:#fff8f8; border-radius:6px; padding:1rem;">
         <div style="font-size:0.85em; color:#721c24;">Overdue</div>
         <div style="font-size:1.8em; font-weight:700; color:#721c24;">{{ stats.count_overdue }}</div>
-        <div style="font-size:0.85em; color:#721c24;">${{ "%.2f"|format(stats.overdue_total) }}</div>
+        <div style="font-size:0.85em; color:#721c24;">{{ stats.overdue_total_by_currency|money }}</div>
     </div>
     <div style="border:1px solid #fff3cd; background:#fffdf5; border-radius:6px; padding:1rem;">
         <div style="font-size:0.85em; color:#856404;">Suspicious (risk ≥ 50%)</div>
@@ -36,6 +36,34 @@
         <div style="font-size:1.8em; font-weight:700;"><a href="/web/approvals">{{ stats.pending_approvals }}</a></div>
     </div>
 </div>
+
+{% if stats.count_overdue %}
+<h3>Aging report (overdue invoices, by days late)</h3>
+<div style="display:flex; gap:1.5rem; align-items:flex-end; flex-wrap:wrap; margin:1rem 0;">
+    <svg width="260" height="140" viewBox="0 0 260 140" role="img" aria-label="Overdue invoice count by aging bucket">
+        {% set max_count = stats.aging_report|map(attribute='count')|max %}
+        {% for bucket in stats.aging_report %}
+        {% set bar_h = (bucket.count / max_count * 100) if max_count > 0 else 0 %}
+        {% set bar_x = loop.index0 * 65 + 10 %}
+        <rect x="{{ bar_x }}" y="{{ 110 - bar_h }}" width="40" height="{{ bar_h }}"
+              fill="{{ '#B33A2E' if bucket.label == '90+' else ('#A6650A' if bucket.label == '61-90' else '#24518C') }}" rx="3"></rect>
+        <text x="{{ bar_x + 20 }}" y="125" text-anchor="middle" font-size="11" fill="#4B5A6B">{{ bucket.label }}</text>
+        <text x="{{ bar_x + 20 }}" y="{{ 105 - bar_h }}" text-anchor="middle" font-size="11" fill="#182430">{{ bucket.count }}</text>
+        {% endfor %}
+        <line x1="5" y1="110" x2="255" y2="110" stroke="#D7DCE3" stroke-width="1"></line>
+    </svg>
+    <table style="flex:1; min-width:260px;">
+        <tr><th>Days overdue</th><th>Count</th><th>Total</th></tr>
+        {% for bucket in stats.aging_report %}
+        <tr>
+            <td>{{ bucket.label }}</td>
+            <td>{{ bucket.count }}</td>
+            <td>{{ bucket.total_by_currency|money if bucket.count else '-' }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+{% endif %}
 
 {% if stats.suspicious_invoices %}
 <h3>Flagged invoices</h3>
