@@ -54,26 +54,31 @@ SYSTEM_PROMPT = (
     "category') - NOT the same as wants_summary, which is a single overall total. When "
     "wants_aggregate=true, set aggregate_by to what's being grouped ('vendor', 'customer', "
     "or 'category') and aggregate_metric to what's being computed ('total' for spend/most, "
-    "'average' for average, 'count' for how many).\n\n"
+    "'average' for average, 'count' for how many). Also set aggregate_order: 'highest' for "
+    "words like 'most', 'highest', 'largest', 'top' (this is the default if unclear); "
+    "'lowest' for words like 'least', 'lowest', 'smallest', 'fewest' - these ask for the "
+    "OPPOSITE ranking, never the same answer as a 'most' question.\n\n"
     "Examples:\n"
     "Q: What do I owe?\n"
-    "A: {\"wants_summary\": true, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false, \"wants_aggregate\": false, \"aggregate_by\": null, \"aggregate_metric\": null}\n"
+    "A: {\"wants_summary\": true, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false, \"wants_aggregate\": false, \"aggregate_by\": null, \"aggregate_metric\": null, \"aggregate_order\": null}\n"
     "Q: Show overdue invoices\n"
-    "A: {\"wants_summary\": false, \"overdue_only\": true, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false, \"wants_aggregate\": false, \"aggregate_by\": null, \"aggregate_metric\": null}\n"
+    "A: {\"wants_summary\": false, \"overdue_only\": true, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false, \"wants_aggregate\": false, \"aggregate_by\": null, \"aggregate_metric\": null, \"aggregate_order\": null}\n"
     "Q: Show unpaid invoices over 500 dollars\n"
-    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": \"unpaid\", \"min_total\": 500, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false, \"wants_aggregate\": false, \"aggregate_by\": null, \"aggregate_metric\": null}\n"
+    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": \"unpaid\", \"min_total\": 500, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false, \"wants_aggregate\": false, \"aggregate_by\": null, \"aggregate_metric\": null, \"aggregate_order\": null}\n"
     "Q: Show paid outgoing invoices\n"
-    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": \"paid\", \"min_total\": null, \"max_total\": null, \"direction\": \"outgoing\", \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false, \"wants_aggregate\": false, \"aggregate_by\": null, \"aggregate_metric\": null}\n"
+    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": \"paid\", \"min_total\": null, \"max_total\": null, \"direction\": \"outgoing\", \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false, \"wants_aggregate\": false, \"aggregate_by\": null, \"aggregate_metric\": null, \"aggregate_order\": null}\n"
     "Q: List all Golden Grain invoices\n"
-    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": \"Golden Grain\", \"invoice_number\": null, \"category\": null, \"risky_only\": false, \"wants_aggregate\": false, \"aggregate_by\": null, \"aggregate_metric\": null}\n"
+    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": \"Golden Grain\", \"invoice_number\": null, \"category\": null, \"risky_only\": false, \"wants_aggregate\": false, \"aggregate_by\": null, \"aggregate_metric\": null, \"aggregate_order\": null}\n"
     "Q: Show suspicious invoices\n"
-    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": true, \"wants_aggregate\": false, \"aggregate_by\": null, \"aggregate_metric\": null}\n"
+    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": true, \"wants_aggregate\": false, \"aggregate_by\": null, \"aggregate_metric\": null, \"aggregate_order\": null}\n"
     "Q: Show utilities expenses\n"
-    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": \"utilities\", \"risky_only\": false, \"wants_aggregate\": false, \"aggregate_by\": null, \"aggregate_metric\": null}\n"
+    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": \"utilities\", \"risky_only\": false, \"wants_aggregate\": false, \"aggregate_by\": null, \"aggregate_metric\": null, \"aggregate_order\": null}\n"
     "Q: Which vendor do I spend the most with?\n"
-    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false, \"wants_aggregate\": true, \"aggregate_by\": \"vendor\", \"aggregate_metric\": \"total\"}\n"
+    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false, \"wants_aggregate\": true, \"aggregate_by\": \"vendor\", \"aggregate_metric\": \"total\", \"aggregate_order\": \"highest\"}\n"
+    "Q: Which vendor do I spend the least with?\n"
+    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false, \"wants_aggregate\": true, \"aggregate_by\": \"vendor\", \"aggregate_metric\": \"total\", \"aggregate_order\": \"lowest\"}\n"
     "Q: What's my average invoice amount by category?\n"
-    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false, \"wants_aggregate\": true, \"aggregate_by\": \"category\", \"aggregate_metric\": \"average\"}"
+    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false, \"wants_aggregate\": true, \"aggregate_by\": \"category\", \"aggregate_metric\": \"average\", \"aggregate_order\": \"highest\"}"
 )
 
 
@@ -102,12 +107,13 @@ def format_answer(intent: QueryIntent, results) -> str:
             return "No invoices to aggregate yet."
         lines = []
         metric_label = {"average": "average", "count": "count"}.get(intent.aggregate_metric, "total")
+        ranking_verb = "is lowest at" if intent.aggregate_order == "lowest" else "leads at"
         for currency, rows in by_currency.items():
             if not rows:
                 continue
             top = rows[0]
             lines.append(
-                f"By {metric_label} ({currency}): {top['label']} leads at "
+                f"By {metric_label} ({currency}): {top['label']} {ranking_verb} "
                 f"{top['value']:.2f} {currency}" + (f" ({top['count']} invoice(s))." if intent.aggregate_metric != "count" else ".")
             )
             for row in rows[1:5]:
@@ -149,6 +155,7 @@ def answer_question(db: Session, org_id: int, question: str) -> dict:
             group_by=intent.aggregate_by,
             metric=intent.aggregate_metric or "total",
             direction=intent.direction,
+            ascending=(intent.aggregate_order == "lowest"),
         )
     elif intent.wants_summary:
         results = invoice_tools.generate_financial_summary(db, org_id)

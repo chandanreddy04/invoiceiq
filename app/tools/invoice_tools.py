@@ -75,6 +75,7 @@ def get_overdue_invoices(db: Session, org_id: int) -> list[Invoice]:
 
 def aggregate_invoices(
     db: Session, org_id: int, group_by: str, metric: str = "total", direction: str | None = None,
+    ascending: bool = False,
 ) -> dict[str, list[dict]]:
     """The tool function query_intent.py's docstring used to describe as a
     real gap: search_invoices() only filters, it can't answer "which
@@ -83,11 +84,16 @@ def aggregate_invoices(
     which is what this does instead.
 
     group_by: "vendor" | "customer" | "category". metric: "total" |
-    "average" | "count". Returns {currency: [{"label", "value", "count"},
-    ...]} sorted by value descending *within* each currency - never
-    summed across currencies, for the same reason totals_by_currency()
-    exists (a $100 USD vendor and a EUR 100 vendor aren't comparable by
-    just adding their numbers together)."""
+    "average" | "count". `ascending` controls ranking direction - False
+    (default) puts the highest first ("most"/"leads"), True puts the
+    lowest first ("least"). A real gap found live: without this, "which
+    vendor do I spend the LEAST with" returned the exact same answer as
+    "the MOST with," since there was previously no way to ask for the
+    opposite ranking at all. Returns {currency: [{"label", "value",
+    "count"}, ...]} sorted *within* each currency - never summed across
+    currencies, for the same reason totals_by_currency() exists (a $100
+    USD vendor and a EUR 100 vendor aren't comparable by just adding
+    their numbers together)."""
     query = db.query(Invoice).options(joinedload(Invoice.items)).filter(Invoice.organization_id == org_id)
     if direction:
         query = query.filter(Invoice.direction == InvoiceDirection(direction))
@@ -119,7 +125,7 @@ def aggregate_invoices(
         by_currency.setdefault(currency, []).append({"label": label, "value": value, "count": len(invs)})
 
     for currency, rows in by_currency.items():
-        rows.sort(key=lambda r: r["value"], reverse=True)
+        rows.sort(key=lambda r: r["value"], reverse=not ascending)
 
     return by_currency
 

@@ -217,6 +217,27 @@ def test_aggregate_invoices_by_vendor_total_ranks_highest_spend_first(db_session
     assert rows[1]["value"] == Decimal("100")
 
 
+def test_aggregate_invoices_ascending_reverses_the_ranking(db_session, org, vendor):
+    """Regression test for a real bug found live: 'which vendor do I spend
+    the LEAST with' returned the exact same answer as 'the MOST with' -
+    there was no way to ask for the opposite ranking at all before this."""
+    from app.models.models import Vendor
+    other_vendor = Vendor(organization_id=org.id, name="Sunrise Packaging Co.", email="s@test.example")
+    db_session.add(other_vendor)
+    db_session.commit()
+
+    db_session.add(make_invoice(org.id, vendor.id, None, InvoiceDirection.incoming, "V1-1", 100, date.today()))
+    db_session.add(make_invoice(org.id, other_vendor.id, None, InvoiceDirection.incoming, "V2-1", 500, date.today()))
+    db_session.commit()
+
+    highest_first = aggregate_invoices(db_session, org.id, group_by="vendor", metric="total", ascending=False)
+    lowest_first = aggregate_invoices(db_session, org.id, group_by="vendor", metric="total", ascending=True)
+
+    assert highest_first["USD"][0]["label"] == "Sunrise Packaging Co."
+    assert lowest_first["USD"][0]["label"] == "Test Vendor"
+    assert highest_first["USD"][0]["label"] != lowest_first["USD"][0]["label"]
+
+
 def test_aggregate_invoices_by_category_average(db_session, org, vendor):
     from app.models.models import InvoiceItem
 

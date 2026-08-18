@@ -34,3 +34,4 @@ class QueryIntent(BaseModel):
     wants_aggregate: bool = False      # "which vendor do I spend the most with", "average invoice amount by category"
     aggregate_by: str | None = None    # "vendor" | "customer" | "category" - what to group by
     aggregate_metric: str | None = None  # "total" | "average" | "count" - what to compute per group
+    aggregate_order: str | None = None   # "highest" (default) | "lowest" - "most"/"least" ranking direction
