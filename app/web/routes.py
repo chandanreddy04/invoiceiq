@@ -28,6 +28,7 @@ from app.models.models import (
     FraudFlag, AgentLog, Communication, ApprovalRequest, User, AuditLog,
 )
 from app.schemas.invoice import InvoiceCreate, InvoiceItemCreate, InvoiceUpdate
+from app.schemas.party import VendorCreate, CustomerCreate
 from app.services import invoice_service, extraction_service, llm_extraction_service
 from app.services.validation_service import InvoiceValidationError
 from app.agents import orchestrator, communication_agent, payment_ap_agent
@@ -359,6 +360,90 @@ async def web_assistant_ask(request: Request, db: Session = Depends(get_db), cur
 def web_agent_activity(request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
     logs = db.query(AgentLog).order_by(AgentLog.created_at.desc()).limit(100).all()
     return templates.TemplateResponse("agent_activity.html", {"request": request, "logs": logs, "current_user": current_user})
+
+
+# --- Audit Log -----------------------------------------------------------
+
+@router.get("/audit-log", response_class=HTMLResponse)
+def web_audit_log(request: Request, entity_type: str | None = None, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    """AuditLog rows are written on every invoice create/update/delete and
+    every approval decision (app/web/routes.py::_audit) - this is the
+    first page that actually lets a person browse them. The data existed
+    from Phase 11 onward; there was just never a UI for it until now."""
+    query = db.query(AuditLog).order_by(AuditLog.timestamp.desc())
+    if entity_type:
+        query = query.filter(AuditLog.entity_type == entity_type)
+    entries = query.limit(200).all()
+    return templates.TemplateResponse(
+        "audit_log.html", {"request": request, "entries": entries, "entity_type": entity_type, "current_user": current_user}
+    )
+
+
+# --- Vendors / Customers --------------------------------------------------
+
+@router.get("/vendors", response_class=HTMLResponse)
+def web_list_vendors(request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    vendors = db.query(Vendor).filter(Vendor.organization_id == DEFAULT_ORG_ID).order_by(Vendor.name).all()
+    return templates.TemplateResponse("vendors_list.html", {"request": request, "vendors": vendors, "current_user": current_user})
+
+
+@router.post("/vendors", response_class=HTMLResponse)
+async def web_create_vendor(request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    form = await request.form()
+    vendor = Vendor(organization_id=DEFAULT_ORG_ID, **VendorCreate(
+        name=form.get("name", ""), email=form.get("email") or None, address=form.get("address") or None,
+    ).model_dump())
+    db.add(vendor)
+    db.commit()
+    _audit(db, "vendor", vendor.id, "create", current_user.email, {"name": vendor.name})
+    return RedirectResponse("/web/vendors", status_code=303)
+
+
+@router.get("/vendors/{vendor_id}", response_class=HTMLResponse)
+def web_vendor_detail(vendor_id: int, request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    vendor = db.query(Vendor).filter(Vendor.id == vendor_id, Vendor.organization_id == DEFAULT_ORG_ID).first()
+    if vendor is None:
+        return RedirectResponse("/web/vendors", status_code=303)
+    invoices = invoice_tools.search_invoices(db, DEFAULT_ORG_ID, party_name=vendor.name)
+    invoices = [i for i in invoices if i.vendor_id == vendor_id]  # party_name search also matches customers by name
+    total_billed = invoice_tools.format_money_by_currency(invoice_tools.totals_by_currency(invoices))
+    risky = [i for i in invoices if i.risk_score is not None and float(i.risk_score) >= 0.5]
+    return templates.TemplateResponse("vendor_detail.html", {
+        "request": request, "vendor": vendor, "invoices": invoices, "total_billed": total_billed,
+        "risky_count": len(risky), "current_user": current_user,
+    })
+
+
+@router.get("/customers", response_class=HTMLResponse)
+def web_list_customers(request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    customers = db.query(Customer).filter(Customer.organization_id == DEFAULT_ORG_ID).order_by(Customer.name).all()
+    return templates.TemplateResponse("customers_list.html", {"request": request, "customers": customers, "current_user": current_user})
+
+
+@router.post("/customers", response_class=HTMLResponse)
+async def web_create_customer(request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    form = await request.form()
+    customer = Customer(organization_id=DEFAULT_ORG_ID, **CustomerCreate(
+        name=form.get("name", ""), email=form.get("email") or None, address=form.get("address") or None,
+    ).model_dump())
+    db.add(customer)
+    db.commit()
+    _audit(db, "customer", customer.id, "create", current_user.email, {"name": customer.name})
+    return RedirectResponse("/web/customers", status_code=303)
+
+
+@router.get("/customers/{customer_id}", response_class=HTMLResponse)
+def web_customer_detail(customer_id: int, request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    customer = db.query(Customer).filter(Customer.id == customer_id, Customer.organization_id == DEFAULT_ORG_ID).first()
+    if customer is None:
+        return RedirectResponse("/web/customers", status_code=303)
+    invoices = invoice_tools.search_invoices(db, DEFAULT_ORG_ID, party_name=customer.name)
+    invoices = [i for i in invoices if i.customer_id == customer_id]
+    total_billed = invoice_tools.format_money_by_currency(invoice_tools.totals_by_currency(invoices))
+    return templates.TemplateResponse("customer_detail.html", {
+        "request": request, "customer": customer, "invoices": invoices, "total_billed": total_billed,
+        "current_user": current_user,
+    })
 
 
 # --- Upload / extraction ------------------------------------------------------

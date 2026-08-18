@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}{{ customer.name }} - InvoiceIQ{% endblock %}
+{% block content %}
+<h1>🧑‍🤝‍🧑 {{ customer.name }}</h1>
+<p>{{ customer.email or "No email on file" }}{% if customer.address %} · {{ customer.address }}{% endif %}</p>
+
+<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:1rem; margin:1.5rem 0;">
+    <div style="border:1px solid #ddd; border-radius:6px; padding:1rem;">
+        <div style="font-size:0.85em; color:#666;">Invoices</div>
+        <div style="font-size:1.8em; font-weight:700;">{{ invoices|length }}</div>
+    </div>
+    <div style="border:1px solid #ddd; border-radius:6px; padding:1rem;">
+        <div style="font-size:0.85em; color:#666;">Total billed</div>
+        <div style="font-size:1.8em; font-weight:700;">{{ total_billed }}</div>
+    </div>
+</div>
+
+<h3>All invoices to this customer</h3>
+{% if invoices %}
+<table>
+    <tr><th>Invoice #</th><th>Due date</th><th>Total</th><th>Payment</th><th>Status</th></tr>
+    {% for inv in invoices %}
+    <tr>
+        <td><a href="/web/invoices/{{ inv.id }}">{{ inv.invoice_number }}</a></td>
+        <td>{{ inv.due_date }}</td>
+        <td>{{ inv.total }} {{ inv.currency }}</td>
+        <td><span class="badge {{ inv.payment_status.value }}">{{ inv.payment_status.value }}</span></td>
+        <td>{{ inv.invoice_status.value }}</td>
+    </tr>
+    {% endfor %}
+</table>
+{% else %}
+<p>No invoices to this customer yet.</p>
+{% endif %}
+<p style="margin-top:1.5rem;"><a href="/web/customers" class="btn secondary">← All customers</a></p>
+{% endblock %}

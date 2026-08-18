@@ -234,6 +234,68 @@ def test_bulk_mark_paid_marks_selected_invoices_and_skips_unselected(client):
     assert untouched["payment_status"] == "unpaid"
 
 
+def test_create_vendor_via_web_ui_and_view_detail_page(client):
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/web/vendors", data={"name": "New Vendor Co.", "email": "nv@test.example"}, follow_redirects=False)
+    assert resp.status_code == 303
+
+    list_resp = client.get("/web/vendors")
+    assert "New Vendor Co." in list_resp.text
+
+    from app.models.models import Vendor
+    db = client.session_factory()
+    try:
+        vendor = db.query(Vendor).filter(Vendor.name == "New Vendor Co.").first()
+        assert vendor is not None
+    finally:
+        db.close()
+
+    detail_resp = client.get(f"/web/vendors/{vendor.id}")
+    assert detail_resp.status_code == 200
+    assert "New Vendor Co." in detail_resp.text
+
+    from app.models.models import AuditLog
+    db = client.session_factory()
+    try:
+        entry = db.query(AuditLog).filter(AuditLog.entity_type == "vendor", AuditLog.action == "create").first()
+        assert entry is not None
+    finally:
+        db.close()
+
+
+def test_create_customer_via_web_ui_and_view_detail_page(client):
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/web/customers", data={"name": "New Customer LLC"}, follow_redirects=False)
+    assert resp.status_code == 303
+
+    from app.models.models import Customer
+    db = client.session_factory()
+    try:
+        customer = db.query(Customer).filter(Customer.name == "New Customer LLC").first()
+        assert customer is not None
+    finally:
+        db.close()
+
+    detail_resp = client.get(f"/web/customers/{customer.id}")
+    assert detail_resp.status_code == 200
+    assert "New Customer LLC" in detail_resp.text
+
+
+def test_audit_log_page_lists_entries_and_filters_by_entity_type(client):
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    client.post("/web/vendors", data={"name": "Audit Test Vendor"})
+
+    resp = client.get("/web/audit-log")
+    assert resp.status_code == 200
+    assert "Audit Test Vendor" in resp.text or "vendor" in resp.text
+
+    filtered = client.get("/web/audit-log", params={"entity_type": "vendor"})
+    assert filtered.status_code == 200
+
+    filtered_out = client.get("/web/audit-log", params={"entity_type": "communication"})
+    assert "Audit Test Vendor" not in filtered_out.text
+
+
 def test_json_api_is_not_gated_by_login(client):
     """Documented limitation (see README): the JSON API has no auth of
     its own, unlike the web UI. Asserted explicitly (not just implied

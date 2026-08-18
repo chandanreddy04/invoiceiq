@@ -94,7 +94,7 @@ def check_duplicate_invoice(
     return query.first()
 
 
-def _totals_by_currency(invoices: list[Invoice]) -> dict[str, Decimal]:
+def totals_by_currency(invoices: list[Invoice]) -> dict[str, Decimal]:
     """Sums Invoice.total grouped by currency - never mix a $100 invoice
     and a €100 invoice into one meaningless "$200" figure. Real bug found
     while auditing this file: every caller of this used to sum .total
@@ -117,10 +117,10 @@ def generate_financial_summary(db: Session, org_id: int) -> dict:
     overdue = [i for i in all_invoices if i.due_date < date.today() and i.payment_status != PaymentStatus.paid]
 
     return {
-        "total_payable_outstanding_by_currency": _totals_by_currency(unpaid(incoming)),
-        "total_receivable_outstanding_by_currency": _totals_by_currency(unpaid(outgoing)),
+        "total_payable_outstanding_by_currency": totals_by_currency(unpaid(incoming)),
+        "total_receivable_outstanding_by_currency": totals_by_currency(unpaid(outgoing)),
         "count_overdue": len(overdue),
-        "overdue_total_by_currency": _totals_by_currency(overdue),
+        "overdue_total_by_currency": totals_by_currency(overdue),
         "count_invoices": len(all_invoices),
     }
 
@@ -142,7 +142,7 @@ AGING_BUCKETS = [("0-30", 0, 30), ("31-60", 31, 60), ("61-90", 61, 90), ("90+", 
 def compute_aging_report(overdue_invoices: list[Invoice]) -> list[dict]:
     """Standard AR/AP aging breakdown: how many overdue invoices fall into
     each days-overdue bucket, and how much they total (per currency -
-    see _totals_by_currency). Bucketed by days overdue rather than a
+    see totals_by_currency). Bucketed by days overdue rather than a
     single "overdue" flag, since a 5-day-late invoice and a 120-day-late
     one need very different attention."""
     today = date.today()
@@ -155,7 +155,7 @@ def compute_aging_report(overdue_invoices: list[Invoice]) -> list[dict]:
         buckets.append({
             "label": label,
             "count": len(in_bucket),
-            "total_by_currency": _totals_by_currency(in_bucket),
+            "total_by_currency": totals_by_currency(in_bucket),
         })
     return buckets
 
@@ -182,7 +182,7 @@ def get_dashboard_stats(db: Session, org_id: int) -> dict:
     return {
         **summary,
         "count_paid": len(paid),
-        "total_paid_amount_by_currency": _totals_by_currency(paid),
+        "total_paid_amount_by_currency": totals_by_currency(paid),
         "suspicious_invoices": sorted(suspicious, key=lambda i: float(i.risk_score), reverse=True),
         "pending_approvals": pending_approvals,
         "aging_report": compute_aging_report(overdue_invoices),

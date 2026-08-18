@@ -287,6 +287,8 @@ Real numbers from `python scripts/evaluate_agents.py`, run against the actual lo
 
 **Honest finding:** the local 3.8B model reliably parses single-constraint natural-language questions ("What do I owe?", "Show overdue invoices") but is unreliable on compound, multi-field questions ("unpaid invoices over $500") — it correctly identifies these aren't summary requests but frequently drops the specific filter values. Reported as a measured limitation, not hidden. Full methodology and a fuller academic write-up: [`PROJECT_REPORT.md`](PROJECT_REPORT.md).
 
+**Follow-up finding:** a 3x larger model was tried as the obvious fix - `ollama pull llama3.1:8b`, then `OLLAMA_MODEL=llama3.1:8b python scripts/evaluate_agents.py`. It did **not** help: llama3.1:8b failed the exact same three compound questions, in the exact same way (same fields dropped), producing an identical 50% exact-match / 44% field-level score. Verified independently outside the eval script too, not just a fluke of one run. This points at the prompt/schema design (or Ollama's `format=<schema>` constrained-decoding behavior with many optional fields) as the actual bottleneck, not raw model capability - so "use a bigger model" is not the fix this particular gap needs. Left as a more precisely scoped open problem rather than a solved one.
+
 ## Security
 
 - Passwords: `hashlib.scrypt` (memory-hard, stdlib), never stored or compared in plain text
@@ -327,7 +329,7 @@ Real numbers from `python scripts/evaluate_agents.py`, run against the actual lo
 - Multi-tenant organization scoping
 - API authentication
 - Replace the fixed-sequence Orchestrator with genuine LLM-based dynamic planning once there's more than one task-routing decision to make
-- Larger local model (7B+) to reduce the compound-query intent-parsing gap measured above
+- ~~Larger local model (7B+) to reduce the compound-query intent-parsing gap~~ — tried (llama3.1:8b), did not help; see the Follow-up finding above. The real fix is likely prompt/schema redesign, not model size.
 - Real payment-gateway integration (currently simulated by design — see [`PROJECT_REPORT.md`](PROJECT_REPORT.md) for why)
 - Docker path build-verification on a machine with Docker installed
 

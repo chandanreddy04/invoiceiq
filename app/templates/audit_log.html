@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Audit Log - InvoiceIQ{% endblock %}
+{% block content %}
+<h1>📜 Audit Log</h1>
+<p>Every human action - who created, edited, or deleted what, and when. Distinct from Agent Activity, which records what the AI agents did.</p>
+
+<form method="get" action="/web/audit-log" class="row">
+    <div>
+        <label>Entity type</label>
+        <select name="entity_type" onchange="this.form.submit()">
+            <option value="" {% if not entity_type %}selected{% endif %}>All</option>
+            {% for t in ["invoice", "vendor", "customer", "approval_request"] %}
+            <option value="{{ t }}" {% if entity_type == t %}selected{% endif %}>{{ t }}</option>
+            {% endfor %}
+        </select>
+    </div>
+</form>
+
+{% if entries %}
+<table>
+    <tr>
+        <th>Time</th><th>Entity</th><th>Action</th><th>Performed by</th><th>Details</th>
+    </tr>
+    {% for e in entries %}
+    <tr>
+        <td>{{ e.timestamp.strftime("%Y-%m-%d %H:%M:%S") if e.timestamp else "-" }}</td>
+        <td>
+            {% if e.entity_type == "invoice" %}<a href="/web/invoices/{{ e.entity_id }}">invoice #{{ e.entity_id }}</a>
+            {% elif e.entity_type == "vendor" %}<a href="/web/vendors/{{ e.entity_id }}">vendor #{{ e.entity_id }}</a>
+            {% elif e.entity_type == "customer" %}<a href="/web/customers/{{ e.entity_id }}">customer #{{ e.entity_id }}</a>
+            {% else %}{{ e.entity_type }} #{{ e.entity_id }}{% endif %}
+        </td>
+        <td><span class="badge {{ 'overdue' if e.action == 'delete' else ('paid' if e.action in ('create', 'approved') else '') }}">{{ e.action }}</span></td>
+        <td>{{ e.performed_by }}</td>
+        <td style="font-family:monospace; font-size:0.85em;">{{ e.details_json or "-" }}</td>
+    </tr>
+    {% endfor %}
+</table>
+<p style="color:#666; font-size:0.9em;">Showing the most recent 200 entries.</p>
+{% else %}
+<p>No audit log entries yet.</p>
+{% endif %}
+{% endblock %}

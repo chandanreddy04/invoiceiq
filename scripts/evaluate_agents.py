@@ -165,8 +165,10 @@ def evaluate_extraction_agent():
 
 
 def main():
+    from app.services.llm_client import MODEL_NAME
+
     print("=" * 70)
-    print("AGENT EVALUATION — real measured results, local phi3.5 model")
+    print(f"AGENT EVALUATION — real measured results, model: {MODEL_NAME}")
     print("=" * 70)
 
     start = time.time()

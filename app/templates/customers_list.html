@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Customers - InvoiceIQ{% endblock %}
+{% block content %}
+<h1>🧑‍🤝‍🧑 Customers</h1>
+<p>Who you bill (outgoing invoices). Previously the only way to add a new customer was the raw JSON API - this form closes that gap.</p>
+
+{% if customers %}
+<table>
+    <tr><th>Name</th><th>Email</th><th>Address</th></tr>
+    {% for c in customers %}
+    <tr>
+        <td><a href="/web/customers/{{ c.id }}">{{ c.name }}</a></td>
+        <td>{{ c.email or "-" }}</td>
+        <td>{{ c.address or "-" }}</td>
+    </tr>
+    {% endfor %}
+</table>
+{% else %}
+<p>No customers yet.</p>
+{% endif %}
+
+<h3>Add a customer</h3>
+<form method="post" action="/web/customers">
+    <div class="row">
+        <div><label>Name</label><input type="text" name="name" required></div>
+        <div><label>Email</label><input type="email" name="email"></div>
+        <div><label>Address</label><input type="text" name="address"></div>
+        <div style="align-self:flex-end;"><button type="submit">Add customer</button></div>
+    </div>
+</form>
+{% endblock %}
