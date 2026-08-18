@@ -9,6 +9,7 @@ from decimal import Decimal
 from app.models.models import Invoice, InvoiceDirection, InvoiceStatus, PaymentStatus
 from app.tools.invoice_tools import (
     search_invoices, get_overdue_invoices, check_duplicate_invoice, generate_financial_summary,
+    aggregate_invoices,
 )
 
 
@@ -194,3 +195,54 @@ def test_search_invoices_filters_by_risky_only(db_session, org, vendor):
 
     result = search_invoices(db_session, org.id, risky_only=True)
     assert [i.invoice_number for i in result] == ["RISK-HIGH"]
+
+
+def test_aggregate_invoices_by_vendor_total_ranks_highest_spend_first(db_session, org, vendor):
+    from app.models.models import Vendor
+    other_vendor = Vendor(organization_id=org.id, name="Sunrise Packaging Co.", email="s@test.example")
+    db_session.add(other_vendor)
+    db_session.commit()
+
+    db_session.add(make_invoice(org.id, vendor.id, None, InvoiceDirection.incoming, "V1-1", 100, date.today()))
+    db_session.add(make_invoice(org.id, other_vendor.id, None, InvoiceDirection.incoming, "V2-1", 500, date.today()))
+    db_session.add(make_invoice(org.id, other_vendor.id, None, InvoiceDirection.incoming, "V2-2", 300, date.today()))
+    db_session.commit()
+
+    result = aggregate_invoices(db_session, org.id, group_by="vendor", metric="total")
+    rows = result["USD"]
+    assert rows[0]["label"] == "Sunrise Packaging Co."
+    assert rows[0]["value"] == Decimal("800")
+    assert rows[0]["count"] == 2
+    assert rows[1]["label"] == "Test Vendor"
+    assert rows[1]["value"] == Decimal("100")
+
+
+def test_aggregate_invoices_by_category_average(db_session, org, vendor):
+    from app.models.models import InvoiceItem
+
+    inv1 = make_invoice(org.id, vendor.id, None, InvoiceDirection.incoming, "AVG-1", 100, date.today())
+    inv1.items = [InvoiceItem(description="Flour", quantity=Decimal("1"), unit_price=Decimal("100"),
+                               line_total=Decimal("100"), category="Raw Ingredients")]
+    inv2 = make_invoice(org.id, vendor.id, None, InvoiceDirection.incoming, "AVG-2", 300, date.today())
+    inv2.items = [InvoiceItem(description="Sugar", quantity=Decimal("1"), unit_price=Decimal("300"),
+                               line_total=Decimal("300"), category="Raw Ingredients")]
+    db_session.add_all([inv1, inv2])
+    db_session.commit()
+
+    result = aggregate_invoices(db_session, org.id, group_by="category", metric="average")
+    rows = result["USD"]
+    assert rows[0]["label"] == "Raw Ingredients"
+    assert rows[0]["value"] == Decimal("200")  # (100 + 300) / 2
+    assert rows[0]["count"] == 2
+
+
+def test_aggregate_invoices_keeps_currencies_separate(db_session, org, vendor):
+    usd_invoice = make_invoice(org.id, vendor.id, None, InvoiceDirection.incoming, "AGG-USD", 100, date.today())
+    eur_invoice = make_invoice(org.id, vendor.id, None, InvoiceDirection.incoming, "AGG-EUR", 900, date.today())
+    eur_invoice.currency = "EUR"
+    db_session.add_all([usd_invoice, eur_invoice])
+    db_session.commit()
+
+    result = aggregate_invoices(db_session, org.id, group_by="vendor", metric="total")
+    assert result["USD"][0]["value"] == Decimal("100")
+    assert result["EUR"][0]["value"] == Decimal("900")

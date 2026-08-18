@@ -49,21 +49,31 @@ SYSTEM_PROMPT = (
     "category: only if an expense/spending category is explicitly named (e.g. 'utilities', "
     "'raw ingredients', 'shipping').\n"
     "risky_only=true for words like 'suspicious', 'risky', 'flagged', or 'fraud'.\n\n"
+    "wants_aggregate=true for questions asking to RANK or COMPARE across vendors/customers/"
+    "categories (e.g. 'which vendor do I spend the most with', 'average invoice amount by "
+    "category') - NOT the same as wants_summary, which is a single overall total. When "
+    "wants_aggregate=true, set aggregate_by to what's being grouped ('vendor', 'customer', "
+    "or 'category') and aggregate_metric to what's being computed ('total' for spend/most, "
+    "'average' for average, 'count' for how many).\n\n"
     "Examples:\n"
     "Q: What do I owe?\n"
-    "A: {\"wants_summary\": true, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false}\n"
+    "A: {\"wants_summary\": true, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false, \"wants_aggregate\": false, \"aggregate_by\": null, \"aggregate_metric\": null}\n"
     "Q: Show overdue invoices\n"
-    "A: {\"wants_summary\": false, \"overdue_only\": true, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false}\n"
+    "A: {\"wants_summary\": false, \"overdue_only\": true, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false, \"wants_aggregate\": false, \"aggregate_by\": null, \"aggregate_metric\": null}\n"
     "Q: Show unpaid invoices over 500 dollars\n"
-    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": \"unpaid\", \"min_total\": 500, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false}\n"
+    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": \"unpaid\", \"min_total\": 500, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false, \"wants_aggregate\": false, \"aggregate_by\": null, \"aggregate_metric\": null}\n"
     "Q: Show paid outgoing invoices\n"
-    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": \"paid\", \"min_total\": null, \"max_total\": null, \"direction\": \"outgoing\", \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false}\n"
+    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": \"paid\", \"min_total\": null, \"max_total\": null, \"direction\": \"outgoing\", \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false, \"wants_aggregate\": false, \"aggregate_by\": null, \"aggregate_metric\": null}\n"
     "Q: List all Golden Grain invoices\n"
-    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": \"Golden Grain\", \"invoice_number\": null, \"category\": null, \"risky_only\": false}\n"
+    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": \"Golden Grain\", \"invoice_number\": null, \"category\": null, \"risky_only\": false, \"wants_aggregate\": false, \"aggregate_by\": null, \"aggregate_metric\": null}\n"
     "Q: Show suspicious invoices\n"
-    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": true}\n"
+    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": true, \"wants_aggregate\": false, \"aggregate_by\": null, \"aggregate_metric\": null}\n"
     "Q: Show utilities expenses\n"
-    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": \"utilities\", \"risky_only\": false}"
+    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": \"utilities\", \"risky_only\": false, \"wants_aggregate\": false, \"aggregate_by\": null, \"aggregate_metric\": null}\n"
+    "Q: Which vendor do I spend the most with?\n"
+    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false, \"wants_aggregate\": true, \"aggregate_by\": \"vendor\", \"aggregate_metric\": \"total\"}\n"
+    "Q: What's my average invoice amount by category?\n"
+    "A: {\"wants_summary\": false, \"overdue_only\": false, \"payment_status\": null, \"min_total\": null, \"max_total\": null, \"direction\": null, \"party_name\": null, \"invoice_number\": null, \"category\": null, \"risky_only\": false, \"wants_aggregate\": true, \"aggregate_by\": \"category\", \"aggregate_metric\": \"average\"}"
 )
 
 
@@ -86,6 +96,24 @@ def parse_intent(question: str) -> QueryIntent:
 
 
 def format_answer(intent: QueryIntent, results) -> str:
+    if intent.wants_aggregate:
+        by_currency = results
+        if not any(by_currency.values()):
+            return "No invoices to aggregate yet."
+        lines = []
+        metric_label = {"average": "average", "count": "count"}.get(intent.aggregate_metric, "total")
+        for currency, rows in by_currency.items():
+            if not rows:
+                continue
+            top = rows[0]
+            lines.append(
+                f"By {metric_label} ({currency}): {top['label']} leads at "
+                f"{top['value']:.2f} {currency}" + (f" ({top['count']} invoice(s))." if intent.aggregate_metric != "count" else ".")
+            )
+            for row in rows[1:5]:
+                lines.append(f"  - {row['label']}: {row['value']:.2f} {currency} ({row['count']} invoice(s))")
+        return "\n".join(lines)
+
     if intent.wants_summary:
         s = results
         lines = [
@@ -115,7 +143,14 @@ def answer_question(db: Session, org_id: int, question: str) -> dict:
     except LLMUnavailableError:
         intent = QueryIntent(wants_summary=True)  # graceful fallback: at least give something useful
 
-    if intent.wants_summary:
+    if intent.wants_aggregate and intent.aggregate_by:
+        results = invoice_tools.aggregate_invoices(
+            db, org_id,
+            group_by=intent.aggregate_by,
+            metric=intent.aggregate_metric or "total",
+            direction=intent.direction,
+        )
+    elif intent.wants_summary:
         results = invoice_tools.generate_financial_summary(db, org_id)
     else:
         results = invoice_tools.search_invoices(
@@ -131,9 +166,16 @@ def answer_question(db: Session, org_id: int, question: str) -> dict:
             risky_only=intent.risky_only,
         )
 
+    if intent.wants_aggregate and intent.aggregate_by:
+        result_count = sum(len(rows) for rows in results.values())
+    elif intent.wants_summary:
+        result_count = results["count_invoices"]
+    else:
+        result_count = len(results)
+
     return {
         "question": question,
         "intent": intent.model_dump(),
         "answer": format_answer(intent, results),
-        "result_count": results["count_invoices"] if intent.wants_summary else len(results),
+        "result_count": result_count,
     }

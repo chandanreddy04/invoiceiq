@@ -73,6 +73,57 @@ def get_overdue_invoices(db: Session, org_id: int) -> list[Invoice]:
     return search_invoices(db, org_id, overdue_only=True)
 
 
+def aggregate_invoices(
+    db: Session, org_id: int, group_by: str, metric: str = "total", direction: str | None = None,
+) -> dict[str, list[dict]]:
+    """The tool function query_intent.py's docstring used to describe as a
+    real gap: search_invoices() only filters, it can't answer "which
+    vendor do I spend the most with" or "average invoice amount by
+    category" - those need grouping and a computed metric per group,
+    which is what this does instead.
+
+    group_by: "vendor" | "customer" | "category". metric: "total" |
+    "average" | "count". Returns {currency: [{"label", "value", "count"},
+    ...]} sorted by value descending *within* each currency - never
+    summed across currencies, for the same reason totals_by_currency()
+    exists (a $100 USD vendor and a EUR 100 vendor aren't comparable by
+    just adding their numbers together)."""
+    query = db.query(Invoice).options(joinedload(Invoice.items)).filter(Invoice.organization_id == org_id)
+    if direction:
+        query = query.filter(Invoice.direction == InvoiceDirection(direction))
+    invoices = query.options(joinedload(Invoice.vendor), joinedload(Invoice.customer)).all()
+
+    groups: dict[tuple[str, str], list[Invoice]] = {}
+    for inv in invoices:
+        if group_by == "category":
+            # A single invoice can have line items in more than one
+            # category - it counts under each category its items touch,
+            # rather than being forced into just one.
+            for cat in {item.category for item in inv.items if item.category}:
+                groups.setdefault((cat, inv.currency), []).append(inv)
+            continue
+        party = inv.vendor if group_by == "vendor" else (inv.customer if group_by == "customer" else None)
+        if party is None:
+            continue
+        groups.setdefault((party.name, inv.currency), []).append(inv)
+
+    by_currency: dict[str, list[dict]] = {}
+    for (label, currency), invs in groups.items():
+        total = sum((i.total for i in invs), Decimal("0"))
+        if metric == "average":
+            value = total / len(invs)
+        elif metric == "count":
+            value = Decimal(len(invs))
+        else:
+            value = total
+        by_currency.setdefault(currency, []).append({"label": label, "value": value, "count": len(invs)})
+
+    for currency, rows in by_currency.items():
+        rows.sort(key=lambda r: r["value"], reverse=True)
+
+    return by_currency
+
+
 def check_duplicate_invoice(
     db: Session, org_id: int, vendor_id: int | None, invoice_number: str, exclude_invoice_id: int | None = None
 ) -> Invoice | None:
