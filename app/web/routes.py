@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Stre
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
-from app.core.config import UPLOAD_DIR, MAX_UPLOAD_SIZE_BYTES, MAX_UPLOAD_SIZE_MB
+from app.core.config import UPLOAD_DIR, MAX_UPLOAD_SIZE_BYTES, MAX_UPLOAD_SIZE_MB, GROQ_API_KEY
 from app.utils.time import utcnow_naive
 from app.database.session import get_db
 from app.models.models import (
@@ -617,8 +617,17 @@ async def web_upload_extract(
         {
             "request": request, "raw_text": raw_text, "fields": extracted, "vendors": vendors,
             "saved_pdf_filename": saved_path.name, "current_user": current_user,
+            "llm_backend_label": _llm_backend_label(),
         },
     )
+
+
+def _llm_backend_label() -> str:
+    """A real, found-live inaccuracy: this page used to hardcode "the
+    local LLM (phi3.5)" regardless of which backend actually served the
+    request - true locally, but flatly wrong on the cloud deployment,
+    which has no local model at all and runs on Groq instead."""
+    return f"Groq ({llm_extraction_service.MODEL_NAME})" if GROQ_API_KEY else f"the local LLM ({llm_extraction_service.MODEL_NAME})"
 
 
 @router.post("/upload/confirm", response_class=HTMLResponse)

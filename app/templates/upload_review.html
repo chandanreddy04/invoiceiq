@@ -4,7 +4,7 @@
 <h1>Review extracted fields</h1>
 
 {% if fields.method == "llm" %}
-<p class="confidence">✅ Extracted by the local LLM (phi3.5) - including line items. Verify everything below before saving.</p>
+<p class="confidence">✅ Extracted by {{ llm_backend_label }} - including line items. Verify everything below before saving.</p>
 {% elif fields.method == "regex_fallback" %}
 <p class="confidence">⚠️ LLM was unavailable, fell back to the simple pattern-matcher (header fields only - no line items found automatically; enter them below). See Section 38 failure-handling: the pipeline degrades gracefully instead of blocking you.
 {% if fields.total_hint %} Detected total on the document: <strong>{{ fields.total_hint }}</strong> - use this to check your line items sum correctly.{% endif %}</p>
