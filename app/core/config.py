@@ -49,7 +49,14 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "phi3.5")
 # prompts, same structured-output contract, just a different backend.
 # Unset locally, so local dev behavior is completely unchanged.
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+# llama-3.3-70b-versatile (the original default here) was removed from
+# Groq's production model lineup after this was first wired up - every
+# request failed regardless of API key validity, which looked
+# indistinguishable from "LLM unavailable" until checked against Groq's
+# current model list directly. openai/gpt-oss-20b is their current
+# free-tier production model - fast, and this app's structured-output
+# calls don't need the larger 120b variant's extra capacity.
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-only-insecure-default-change-in-env")
 

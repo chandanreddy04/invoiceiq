@@ -113,6 +113,16 @@ def _chat_groq(messages: list[dict], schema: dict | None, temperature: float) ->
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
     except Exception as e:
+        # Logged, not just wrapped - a bad model ID and a bad API key both
+        # collapse into the same generic "LLM unavailable" from the
+        # caller's side, and the /health endpoint deliberately doesn't
+        # expose failure detail (it's a public, unauthenticated route).
+        # This is the one place that detail survives anywhere - previously
+        # it was silently discarded, which is exactly why a deprecated
+        # model ID was indistinguishable from an invalid key without
+        # checking Groq's model list directly.
+        body = getattr(getattr(e, "response", None), "text", "")
+        logger.warning("Groq call failed (model=%s): %s %s", GROQ_MODEL, e, body[:300])
         raise LLMUnavailableError(str(e)) from e
 
 
