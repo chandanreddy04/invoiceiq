@@ -15,8 +15,8 @@ import logging
 import uuid
 from decimal import Decimal, InvalidOperation
 
-from fastapi import APIRouter, Depends, Request, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
@@ -614,7 +614,10 @@ async def web_upload_extract(
 
     return templates.TemplateResponse(
         "upload_review.html",
-        {"request": request, "raw_text": raw_text, "fields": extracted, "vendors": vendors, "current_user": current_user},
+        {
+            "request": request, "raw_text": raw_text, "fields": extracted, "vendors": vendors,
+            "saved_pdf_filename": saved_path.name, "current_user": current_user,
+        },
     )
 
 
@@ -637,6 +640,7 @@ async def web_upload_confirm(request: Request, db: Session = Depends(get_db), cu
             currency=(form.get("currency") or "USD").upper(),
             payment_terms=form.get("payment_terms") or "Net 30",
             items=items,
+            source_pdf_filename=form.get("source_pdf_filename") or None,
         )
         invoice = invoice_service.create_invoice(db, DEFAULT_ORG_ID, payload)
         _audit(db, "invoice", invoice.id, "create", current_user.email, {"invoice_number": invoice.invoice_number, "source": "upload"})
@@ -654,7 +658,36 @@ async def web_upload_confirm(request: Request, db: Session = Depends(get_db), cu
         }
         return templates.TemplateResponse(
             "upload_review.html",
-            {"request": request, "raw_text": "", "fields": retry_fields, "vendors": vendors, "error": str(e), "current_user": current_user},
+            {
+                "request": request, "raw_text": "", "fields": retry_fields, "vendors": vendors, "error": str(e),
+                "saved_pdf_filename": form.get("source_pdf_filename"), "current_user": current_user,
+            },
             status_code=422,
         )
     return RedirectResponse(f"/web/invoices/{invoice.id}", status_code=303)
+
+
+@router.get("/invoices/{invoice_id}/source-pdf")
+def web_view_source_pdf(invoice_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    """The other half of the real gap found live: the Upload flow saved
+    every PDF to disk but never linked it to the invoice it created, so
+    there was no way to look at the original again. Only ever serves
+    the exact filename already stored on the invoice record - never a
+    filename taken from the request - so there's no path-traversal
+    surface here at all."""
+    invoice = invoice_service.get_invoice(db, invoice_id)
+    if invoice is None or not invoice.source_pdf_filename:
+        raise HTTPException(status_code=404, detail="No original PDF is linked to this invoice.")
+
+    file_path = UPLOAD_DIR / invoice.source_pdf_filename
+    if not file_path.exists():
+        # Exactly the scenario this fix was built to make visible instead
+        # of silent: a cloud redeploy wipes the ephemeral disk, but the
+        # database record survives - so this is a clear message, not a
+        # crash or a broken link that looks like a bug.
+        raise HTTPException(
+            status_code=404,
+            detail="This invoice has a linked PDF, but the file is no longer on disk "
+                   "(a free-tier cloud redeploy wipes locally-saved files - the extracted invoice data is unaffected).",
+        )
+    return FileResponse(file_path, media_type="application/pdf", filename=f"{invoice.invoice_number}.pdf")

@@ -467,6 +467,69 @@ def test_audit_log_page_lists_entries_and_filters_by_entity_type(client):
     assert "Audit Test Vendor" not in filtered_out.text
 
 
+def test_source_pdf_is_served_when_linked_and_present(client):
+    """Regression test for a real gap: the Upload flow saved every PDF
+    to disk but never recorded where, so nothing could find it again.
+    This proves the fix end-to-end - link a filename to an invoice at
+    creation, then confirm the invoice actually serves that file back."""
+    from app.core.config import UPLOAD_DIR
+
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    fake_pdf = UPLOAD_DIR / "test-source.pdf"
+    fake_pdf.write_bytes(b"%PDF-1.4 fake content for testing")
+    try:
+        resp = client.post("/invoices", json={
+            "direction": "incoming", "invoice_number": "PDF-LINK-1", "vendor_id": 1,
+            "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+            "items": [{"description": "X", "quantity": 1, "unit_price": 5}],
+            "source_pdf_filename": "test-source.pdf",
+        })
+        invoice_id = resp.json()["id"]
+        assert resp.json()["source_pdf_filename"] == "test-source.pdf"
+
+        pdf_resp = client.get(f"/web/invoices/{invoice_id}/source-pdf")
+        assert pdf_resp.status_code == 200
+        assert pdf_resp.headers["content-type"] == "application/pdf"
+        assert pdf_resp.content == b"%PDF-1.4 fake content for testing"
+    finally:
+        fake_pdf.unlink(missing_ok=True)
+
+
+def test_source_pdf_returns_404_when_no_pdf_linked(client):
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/invoices", json={
+        "direction": "incoming", "invoice_number": "NO-PDF-1", "vendor_id": 1,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "X", "quantity": 1, "unit_price": 5}],
+    })
+    invoice_id = resp.json()["id"]
+    assert resp.json()["source_pdf_filename"] is None
+
+    pdf_resp = client.get(f"/web/invoices/{invoice_id}/source-pdf")
+    assert pdf_resp.status_code == 404
+    assert "No original PDF" in pdf_resp.json()["detail"]
+
+
+def test_source_pdf_returns_clear_404_when_linked_but_file_missing_from_disk(client):
+    """The exact scenario this fix documents rather than hides: a cloud
+    redeploy wipes the ephemeral disk, but the database record (and the
+    rest of the invoice) survives untouched. This should read as a clear
+    message, not a crash or a broken-looking link."""
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/invoices", json={
+        "direction": "incoming", "invoice_number": "MISSING-PDF-1", "vendor_id": 1,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "X", "quantity": 1, "unit_price": 5}],
+        "source_pdf_filename": "never-actually-saved.pdf",
+    })
+    invoice_id = resp.json()["id"]
+
+    pdf_resp = client.get(f"/web/invoices/{invoice_id}/source-pdf")
+    assert pdf_resp.status_code == 404
+    assert "no longer on disk" in pdf_resp.json()["detail"]
+
+
 def test_risk_explanation_stream_returns_sse_chunks(client):
     _login(client, OWNER_EMAIL, OWNER_PASSWORD)
     resp = client.post("/invoices", json={

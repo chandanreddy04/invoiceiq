@@ -45,6 +45,7 @@ class InvoiceCreate(BaseModel):
     currency: str = Field(default="USD", min_length=3, max_length=3)
     payment_terms: str = "Net 30"
     items: list[InvoiceItemCreate]
+    source_pdf_filename: str | None = None  # set only by the Upload flow - never client-supplied elsewhere
 
 
 class InvoiceUpdate(BaseModel):
@@ -83,5 +84,6 @@ class InvoiceRead(BaseModel):
     invoice_status: InvoiceStatus
     confidence_score: Decimal | None
     risk_score: Decimal | None
+    source_pdf_filename: str | None
     created_at: datetime
     items: list[InvoiceItemRead]

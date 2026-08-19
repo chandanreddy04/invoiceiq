@@ -82,6 +82,7 @@ def create_invoice(db: Session, org_id: int, payload: InvoiceCreate) -> Invoice:
         payment_terms=payload.payment_terms,
         payment_status=PaymentStatus.unpaid,
         invoice_status=InvoiceStatus.validated,
+        source_pdf_filename=payload.source_pdf_filename,
     )
     invoice.items = [
         InvoiceItem(

@@ -19,6 +19,7 @@
 
 <form method="post" action="/web/upload/confirm">
     <input type="hidden" name="direction" value="incoming">
+    {% if saved_pdf_filename %}<input type="hidden" name="source_pdf_filename" value="{{ saved_pdf_filename }}">{% endif %}
 
     <div class="row">
         <div>

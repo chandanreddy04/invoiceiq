@@ -3,6 +3,10 @@
 {% block content %}
 <h1>{{ "Edit Invoice #" ~ invoice.invoice_number if invoice else "New Invoice" }}</h1>
 
+{% if invoice and invoice.source_pdf_filename %}
+<p><a href="/web/invoices/{{ invoice.id }}/source-pdf" target="_blank" rel="noopener">📄 View original uploaded PDF</a></p>
+{% endif %}
+
 {% if fraud_flag %}
 <div class="flash {{ 'error' if fraud_flag.risk_score|float >= 0.7 else ('success' if fraud_flag.risk_score|float < 0.3 else '') }}" style="{% if fraud_flag.risk_score|float >= 0.3 and fraud_flag.risk_score|float < 0.7 %}background:#fff3cd;color:#856404;{% endif %}">
     <strong>Fraud/Risk Agent: {{ (fraud_flag.risk_score|float * 100)|round }}% risk</strong>

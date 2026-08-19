@@ -109,6 +109,14 @@ class Invoice(Base):
     confidence_score = Column(Numeric(4, 3), nullable=True)   # set by Extraction Agent in Phase 2+
     risk_score = Column(Numeric(4, 3), nullable=True)          # set by Fraud Agent in Phase 7+
 
+    # A real gap found live: the Upload flow saved every PDF to disk
+    # under a generated name, but never recorded that name anywhere -
+    # the file existed, but nothing in the app could ever find it again.
+    # Only the filename is stored (not a full path) - UPLOAD_DIR is
+    # already known from config, so this stays portable if that
+    # directory ever moves.
+    source_pdf_filename = Column(String(255), nullable=True)
+
     created_at = Column(DateTime, default=utcnow_naive)
 
     organization = relationship("Organization", back_populates="invoices")

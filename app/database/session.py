@@ -35,3 +35,23 @@ def init_db() -> None:
     startup - it never touches tables that already exist."""
     from app.models import models  # noqa: F401  (import so models register with Base)
     Base.metadata.create_all(bind=engine)
+    _add_missing_columns()
+
+
+def _add_missing_columns() -> None:
+    """create_all() only creates tables that don't exist yet - it never
+    alters a table that's already there, so a new column added to a
+    model needs a matching migration here or it silently never applies
+    to a database (local or cloud) that was created before the column
+    existed. This project has no migration framework (Alembic would be
+    overkill at this scale), so this is a small, explicit, idempotent
+    substitute: check what's actually in the database before running
+    ALTER TABLE, safe to call on every startup. ADD COLUMN syntax here
+    works unchanged on both SQLite and Postgres."""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    existing = {col["name"] for col in inspector.get_columns("invoices")}
+    if "source_pdf_filename" not in existing:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE invoices ADD COLUMN source_pdf_filename VARCHAR(255)"))
