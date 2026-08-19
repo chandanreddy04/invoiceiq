@@ -143,11 +143,55 @@ def format_answer(intent: QueryIntent, results) -> str:
     return "\n".join(lines)
 
 
+_ORDER_KEYWORDS = {
+    "lowest": ("least", "lowest", "smallest", "fewest", "minimum"),
+    "highest": ("most", "highest", "largest", "biggest", "top", "maximum"),
+}
+
+
+def _correct_ranking_intent(question: str, intent: QueryIntent) -> QueryIntent:
+    """Safety net for a real, measured gap: smaller/faster models (Groq's
+    free-tier openai/gpt-oss-20b included) sometimes miss that a
+    "most"/"least" question is a ranking request at all and fall back to
+    wants_summary=true - reproduced even with the exact question spelled
+    out as a worked example in the prompt, so this isn't a prompt-wording
+    problem to fix with more instructions.
+
+    "most" vs "least" is a closed, fixed vocabulary, not fuzzy language -
+    checking a short word list deterministically is strictly more
+    reliable than trusting a model to reproduce it every single call.
+    Only activates when there's an unambiguous ranking word AND the
+    model didn't already recognize this as an aggregate question - it
+    never overrides a call the model already got right, so this can only
+    improve on the model's own answer, never make it worse."""
+    if intent.wants_aggregate:
+        return intent
+    q = question.lower()
+    order = next((o for o, words in _ORDER_KEYWORDS.items() if any(w in q for w in words)), None)
+    if order is None:
+        return intent
+
+    by = "customer" if "customer" in q else "category" if ("categor" in q or "expense" in q) else "vendor"
+    return intent.model_copy(update={
+        "wants_summary": False,
+        "wants_aggregate": True,
+        "aggregate_by": by,
+        "aggregate_metric": intent.aggregate_metric or "total",
+        "aggregate_order": order,
+    })
+
+
 def answer_question(db: Session, org_id: int, question: str) -> dict:
     try:
         intent = parse_intent(question)
     except LLMUnavailableError:
         intent = QueryIntent(wants_summary=True)  # graceful fallback: at least give something useful
+    else:
+        # Only applied when the LLM actually responded - a genuinely
+        # unavailable LLM stays an honest "here's a summary" fallback,
+        # not silently upgraded into an aggregate answer with no real
+        # parsing behind it.
+        intent = _correct_ranking_intent(question, intent)
 
     if intent.wants_aggregate and intent.aggregate_by:
         results = invoice_tools.aggregate_invoices(
