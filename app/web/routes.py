@@ -10,6 +10,8 @@ Every route except /login itself requires a logged-in user
 owner role (Depends(require_owner)) - see app/security/deps.py.
 """
 
+import csv
+import io
 import json
 import logging
 import uuid
@@ -127,6 +129,113 @@ def web_list_invoices(
     return templates.TemplateResponse(
         "invoices_list.html",
         {"request": request, "invoices": invoices, "direction": direction, "payment_status": payment_status, "q": q, "current_user": current_user},
+    )
+
+
+@router.get("/invoices/export.csv")
+def web_export_invoices_csv(
+    direction: str | None = None,
+    payment_status: str | None = None,
+    q: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_login),
+):
+    """A real, buildable piece of "accounting ecosystem integration" -
+    a full QuickBooks/Xero OAuth sync needs developer credentials on
+    their platforms this project doesn't have, but CSV is genuinely how
+    most accounting software actually imports data, QuickBooks and Xero
+    both included. Respects whatever filter is active on the Invoices
+    page, so exporting "just what I'm looking at" works for free."""
+    invoices = invoice_service.list_invoices(
+        db, DEFAULT_ORG_ID,
+        InvoiceDirection(direction) if direction else None,
+        PaymentStatus(payment_status) if payment_status else None,
+        q=q,
+    )
+    # Read every field into plain Python values *before* returning -
+    # StreamingResponse iterates its generator only after this function
+    # has already returned, by which point the request-scoped `db`
+    # session (Depends(get_db)) has closed. A real bug caught by testing:
+    # touching a lazy-loaded ORM attribute (like .vendor) from inside the
+    # generator raised DetachedInstanceError, since there was no open
+    # session left to run that query.
+    rows = [
+        (
+            inv.invoice_number, inv.direction.value,
+            inv.vendor.name if inv.vendor else (inv.customer.name if inv.customer else ""),
+            inv.invoice_date, inv.due_date, inv.subtotal, inv.tax, inv.discount, inv.total, inv.currency,
+            inv.payment_status.value, inv.invoice_status.value,
+            f"{inv.risk_score:.3f}" if inv.risk_score is not None else "",
+        )
+        for inv in invoices
+    ]
+
+    def _generate():
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow([
+            "Invoice Number", "Direction", "Party", "Invoice Date", "Due Date",
+            "Subtotal", "Tax", "Discount", "Total", "Currency",
+            "Payment Status", "Invoice Status", "Risk Score",
+        ])
+        yield buffer.getvalue()
+        for row in rows:
+            buffer.seek(0); buffer.truncate(0)
+            writer.writerow(row)
+            yield buffer.getvalue()
+
+    return StreamingResponse(
+        _generate(), media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=invoiceiq_invoices.csv"},
+    )
+
+
+@router.get("/invoices/export/general-ledger.csv")
+def web_export_general_ledger_csv(
+    direction: str | None = None,
+    payment_status: str | None = None,
+    q: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_login),
+):
+    """Line-item-level export instead of one row per invoice - the shape
+    an actual GL import wants, since posting to the right expense
+    category happens at the line-item level, not the invoice level."""
+    invoices = invoice_service.list_invoices(
+        db, DEFAULT_ORG_ID,
+        InvoiceDirection(direction) if direction else None,
+        PaymentStatus(payment_status) if payment_status else None,
+        q=q,
+    )
+    # Same fix as the invoice export above: materialize every field into
+    # plain Python values now, while the session is still open, since the
+    # generator below only runs after this function has already returned.
+    rows = [
+        (
+            inv.invoice_number, inv.invoice_date,
+            inv.vendor.name if inv.vendor else (inv.customer.name if inv.customer else ""),
+            item.description, item.category or "", item.quantity, item.unit_price, item.line_total, inv.currency,
+        )
+        for inv in invoices
+        for item in inv.items
+    ]
+
+    def _generate():
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow([
+            "Invoice Number", "Invoice Date", "Party", "Line Description",
+            "Category", "Quantity", "Unit Price", "Line Total", "Currency",
+        ])
+        yield buffer.getvalue()
+        for row in rows:
+            buffer.seek(0); buffer.truncate(0)
+            writer.writerow(row)
+            yield buffer.getvalue()
+
+    return StreamingResponse(
+        _generate(), media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=invoiceiq_general_ledger.csv"},
     )
 
 

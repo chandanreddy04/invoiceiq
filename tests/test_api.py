@@ -530,6 +530,67 @@ def test_source_pdf_returns_clear_404_when_linked_but_file_missing_from_disk(cli
     assert "no longer on disk" in pdf_resp.json()["detail"]
 
 
+def test_export_invoices_csv_contains_real_data_and_respects_filters(client):
+    import csv, io
+
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    client.post("/invoices", json={
+        "direction": "incoming", "invoice_number": "CSV-EXPORT-1", "vendor_id": 1,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "Widget", "quantity": 2, "unit_price": 10}],
+    })
+    client.post("/invoices", json={
+        "direction": "outgoing", "invoice_number": "CSV-EXPORT-2", "customer_id": 1,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "Service", "quantity": 1, "unit_price": 50}],
+    })
+
+    resp = client.get("/web/invoices/export.csv")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/csv")
+    assert "attachment" in resp.headers["content-disposition"]
+
+    rows = list(csv.reader(io.StringIO(resp.text)))
+    header, data_rows = rows[0], rows[1:]
+    assert header[0] == "Invoice Number"
+    numbers = [r[0] for r in data_rows]
+    assert "CSV-EXPORT-1" in numbers
+    assert "CSV-EXPORT-2" in numbers
+
+    # Filtered export should only include the incoming one
+    filtered = client.get("/web/invoices/export.csv", params={"direction": "incoming"})
+    filtered_rows = list(csv.reader(io.StringIO(filtered.text)))[1:]
+    filtered_numbers = [r[0] for r in filtered_rows]
+    assert "CSV-EXPORT-1" in filtered_numbers
+    assert "CSV-EXPORT-2" not in filtered_numbers
+
+
+def test_export_general_ledger_csv_breaks_out_by_line_item(client):
+    import csv, io
+
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    client.post("/invoices", json={
+        "direction": "incoming", "invoice_number": "GL-EXPORT-1", "vendor_id": 1,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [
+            {"description": "Item A", "quantity": 1, "unit_price": 10},
+            {"description": "Item B", "quantity": 2, "unit_price": 5},
+        ],
+    })
+
+    resp = client.get("/web/invoices/export/general-ledger.csv")
+    assert resp.status_code == 200
+    rows = list(csv.reader(io.StringIO(resp.text)))
+    header, data_rows = rows[0], rows[1:]
+    assert header[0] == "Invoice Number"
+    assert header[3] == "Line Description"
+
+    gl_rows = [r for r in data_rows if r[0] == "GL-EXPORT-1"]
+    assert len(gl_rows) == 2  # one row per line item, not one per invoice
+    descriptions = {r[3] for r in gl_rows}
+    assert descriptions == {"Item A", "Item B"}
+
+
 def test_risk_explanation_stream_returns_sse_chunks(client):
     _login(client, OWNER_EMAIL, OWNER_PASSWORD)
     resp = client.post("/invoices", json={

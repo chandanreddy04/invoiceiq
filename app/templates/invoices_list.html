@@ -31,6 +31,13 @@
     </div>
 </form>
 
+{% set export_qs = "direction=" ~ (direction or "") ~ "&payment_status=" ~ (payment_status or "") ~ "&q=" ~ (q or "") %}
+<p style="margin-top:0.5rem;">
+    <a href="/web/invoices/export.csv?{{ export_qs }}" class="btn secondary">⬇ Export CSV</a>
+    <a href="/web/invoices/export/general-ledger.csv?{{ export_qs }}" class="btn secondary">⬇ Export general ledger CSV</a>
+    <span class="confidence">Exports respect the filters above - matches whatever's currently shown in the table.</span>
+</p>
+
 {% if invoices %}
 <form method="post" action="/web/invoices/bulk-mark-paid" id="bulk-form">
     <input type="hidden" name="direction" value="{{ direction or '' }}">
