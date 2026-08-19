@@ -9,8 +9,10 @@ use the db_session/vendor fixtures from conftest.
 from datetime import date, timedelta
 from decimal import Decimal
 
-from app.agents.fraud_risk_agent import score_risk, compute_risk_signals, HIGH_RISK_THRESHOLD
-from app.models.models import Invoice, InvoiceDirection, InvoiceStatus, PaymentStatus
+from app.agents.fraud_risk_agent import (
+    score_risk, compute_risk_signals, find_vendors_sharing_contact_info, HIGH_RISK_THRESHOLD,
+)
+from app.models.models import Invoice, InvoiceDirection, InvoiceStatus, PaymentStatus, Vendor
 from app.utils.time import utcnow_naive
 
 
@@ -22,6 +24,7 @@ def make_signals(**overrides):
         "amount_ratio_basis": None,
         "max_invoice_number_similarity": 0.0,
         "similar_invoice_number": None,
+        "shared_contact_vendors": [],
     }
     base.update(overrides)
     return base
@@ -168,3 +171,55 @@ def test_org_wide_baseline_excludes_already_flagged_invoices(db_session, org, ve
     # Baseline should be just the $100 normal invoice, not (100+10000)/2 -
     # so ratio should be 500/100 = 5.0, not 500/5050 ≈ 0.1
     assert signals["amount_ratio"] == 5.0
+
+
+def test_shared_contact_vendors_adds_risk_and_names_the_other_vendor():
+    risk, reasons = score_risk(make_signals(shared_contact_vendors=["Golden Grain Milling"]))
+    assert risk == 0.35
+    assert "Golden Grain Milling" in reasons[0]
+
+
+def test_shared_contact_vendors_stacks_with_other_signals():
+    alone, _ = score_risk(make_signals(shared_contact_vendors=["Other Co."]))
+    stacked, _ = score_risk(make_signals(shared_contact_vendors=["Other Co."], is_new_vendor=True, vendor_age_days=1))
+    assert stacked > alone
+
+
+def test_find_vendors_sharing_contact_info_matches_on_email(db_session, org):
+    v1 = Vendor(organization_id=org.id, name="Acme Supply", email="billing@acme.example", address="1 Main St")
+    v2 = Vendor(organization_id=org.id, name="Acme Supply LLC", email="billing@acme.example", address="2 Other St")
+    db_session.add_all([v1, v2])
+    db_session.commit()
+
+    matches = find_vendors_sharing_contact_info(db_session, org.id, v1)
+    assert [m.name for m in matches] == ["Acme Supply LLC"]
+
+
+def test_find_vendors_sharing_contact_info_address_match_is_case_and_whitespace_insensitive(db_session, org):
+    v1 = Vendor(organization_id=org.id, name="Vendor A", email="a@test.example", address="500 Warehouse Rd, Suite 3")
+    v2 = Vendor(organization_id=org.id, name="Vendor B", email="b@test.example", address="  500 WAREHOUSE RD, SUITE 3  ")
+    db_session.add_all([v1, v2])
+    db_session.commit()
+
+    matches = find_vendors_sharing_contact_info(db_session, org.id, v1)
+    assert [m.name for m in matches] == ["Vendor B"]
+
+
+def test_find_vendors_sharing_contact_info_ignores_blank_fields(db_session, org):
+    """Two vendors both missing an address must never "match" on that
+    blank field - that would flag nearly every vendor with no address
+    on file as suspicious, which is worse than not checking at all."""
+    v1 = Vendor(organization_id=org.id, name="Vendor A", email="a@test.example", address=None)
+    v2 = Vendor(organization_id=org.id, name="Vendor B", email="b@test.example", address=None)
+    db_session.add_all([v1, v2])
+    db_session.commit()
+
+    assert find_vendors_sharing_contact_info(db_session, org.id, v1) == []
+
+
+def test_find_vendors_sharing_contact_info_finds_none_for_distinct_vendors(db_session, org, vendor):
+    other = Vendor(organization_id=org.id, name="Totally Different Co.", email="x@test.example", address="9 Nowhere Ave")
+    db_session.add(other)
+    db_session.commit()
+
+    assert find_vendors_sharing_contact_info(db_session, org.id, vendor) == []

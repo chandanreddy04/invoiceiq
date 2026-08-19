@@ -5,7 +5,11 @@ The Fraud/Risk Agent - the clearest example in this project of why
 Walking through the layers from the Section 5 design:
 
   INPUT LAYER       -> an Invoice that was just created
-  CONTEXT/MEMORY     -> this vendor's prior invoices, pulled from the database
+  CONTEXT/MEMORY     -> this vendor's prior invoices, pulled from the database - and, since
+                        this was a real gap in every earlier signal here, other VENDOR
+                        RECORDS in the same organization too, to catch a fraud/data-integrity
+                        pattern no single-vendor history check can see on its own: two
+                        "different" vendors secretly sharing an email or address
   REASONING LAYER    -> compute_risk_signals() + score_risk(): PLAIN PYTHON.
                         Ratios, date math, string similarity - no LLM call
                         anywhere in here. This is the part that actually
@@ -51,6 +55,27 @@ def get_vendor_history(db: Session, vendor_id: int, exclude_invoice_id: int | No
     return query.all()
 
 
+def find_vendors_sharing_contact_info(db: Session, org_id: int, vendor: Vendor) -> list[Vendor]:
+    """Tool: other vendor records in this organization that share this
+    vendor's email or mailing address. A real gap in every signal above -
+    each one only ever looks at a single vendor's own history in
+    isolation, so two "different" vendor records secretly sharing
+    contact details (a classic vendor-impersonation technique for
+    quietly rerouting payments - and just as often an innocent
+    duplicate-entry mistake) was invisible to this agent entirely until
+    now. Comparison is case/whitespace-normalized; blank fields on
+    either side never count as a match, so two vendors both missing an
+    address don't falsely "share" one."""
+    others = db.query(Vendor).filter(Vendor.organization_id == org_id, Vendor.id != vendor.id).all()
+    v_email = (vendor.email or "").strip().lower()
+    v_address = (vendor.address or "").strip().lower()
+    return [
+        other for other in others
+        if (v_email and v_email == (other.email or "").strip().lower())
+        or (v_address and v_address == (other.address or "").strip().lower())
+    ]
+
+
 def compute_risk_signals(db: Session, invoice: Invoice, vendor: Vendor) -> dict:
     """Gathers the raw numbers score_risk() will reason over. No verdict yet."""
     history = get_vendor_history(db, vendor.id, exclude_invoice_id=invoice.id)
@@ -62,7 +87,12 @@ def compute_risk_signals(db: Session, invoice: Invoice, vendor: Vendor) -> dict:
         "amount_ratio_basis": None,  # "vendor" | "org" - what the ratio was computed against
         "max_invoice_number_similarity": 0.0,
         "similar_invoice_number": None,
+        "shared_contact_vendors": [],  # names of other vendors sharing this one's email/address
     }
+
+    signals["shared_contact_vendors"] = [
+        v.name for v in find_vendors_sharing_contact_info(db, invoice.organization_id, vendor)
+    ]
 
     if vendor.created_at:
         signals["vendor_age_days"] = (utcnow_naive() - vendor.created_at).days
@@ -134,6 +164,14 @@ def score_risk(signals: dict) -> tuple[float, list[str]]:
         reasons.append(
             f"Invoice number closely resembles a previous invoice "
             f"('{signals['similar_invoice_number']}', {signals['max_invoice_number_similarity']:.0%} similar)."
+        )
+
+    if signals["shared_contact_vendors"]:
+        risk += 0.35
+        names = ", ".join(signals["shared_contact_vendors"])
+        reasons.append(
+            f"This vendor shares an email or address with another vendor on file ({names}) - "
+            "could be a duplicate entry, or a look-alike vendor set up to redirect payments."
         )
 
     if not reasons:
