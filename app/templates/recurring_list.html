@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Recurring Invoices - InvoiceIQ{% endblock %}
+{% block content %}
+<h1>🔁 Recurring Invoices</h1>
+<p class="confidence">Templates that generate a real invoice each time they come due. Nothing generates automatically from here alone - click "Generate due invoices now" below, or point an external scheduler at this same route (see the recurring invoice service's docstring).</p>
+
+<p>
+    <a href="/web/recurring/new" class="btn">➕ New recurring invoice</a>
+    <form method="post" action="/web/recurring/generate-due" style="display:inline;">
+        <button type="submit">▶️ Generate due invoices now</button>
+    </form>
+</p>
+
+{% if templates_list %}
+<table>
+    <tr><th>Name</th><th>Customer</th><th>Frequency</th><th>Next run</th><th>Status</th><th></th></tr>
+    {% for t in templates_list %}
+    <tr>
+        <td>{{ t.name }}</td>
+        <td>{{ t.customer.name if t.customer else "-" }}</td>
+        <td>{{ t.frequency.value }}</td>
+        <td>{{ t.next_run_date }}{% if t.next_run_date <= today %} <span class="badge overdue">due</span>{% endif %}</td>
+        <td><span class="badge {{ 'paid' if t.is_active else 'unpaid' }}">{{ 'active' if t.is_active else 'paused' }}</span></td>
+        <td>
+            <form method="post" action="/web/recurring/{{ t.id }}/toggle" style="display:inline;">
+                <button type="submit" class="secondary" style="margin-top:0;font-size:0.85em;">{{ '⏸️ Pause' if t.is_active else '▶️ Resume' }}</button>
+            </form>
+            <form method="post" action="/web/recurring/{{ t.id }}/delete" onsubmit="return confirm('Delete this recurring invoice template?');" style="display:inline;">
+                <button type="submit" class="secondary" style="margin-top:0;font-size:0.85em;">🗑️</button>
+            </form>
+        </td>
+    </tr>
+    {% endfor %}
+</table>
+{% else %}
+<p>No recurring invoices yet.</p>
+{% endif %}
+{% endblock %}

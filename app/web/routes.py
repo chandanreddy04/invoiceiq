@@ -15,6 +15,7 @@ import io
 import json
 import logging
 import uuid
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, UploadFile, File, Form
@@ -31,7 +32,8 @@ from app.models.models import (
 )
 from app.schemas.invoice import InvoiceCreate, InvoiceItemCreate, InvoiceUpdate
 from app.schemas.party import VendorCreate, CustomerCreate
-from app.services import invoice_service, extraction_service, llm_extraction_service, invoice_pdf_service, email_service
+from app.services import invoice_service, extraction_service, llm_extraction_service, invoice_pdf_service, email_service, recurring_invoice_service
+from app.schemas.recurring_invoice import RecurringInvoiceCreate
 from app.services.validation_service import InvoiceValidationError
 from app.agents import orchestrator, communication_agent, payment_ap_agent, collections_agent, fraud_risk_agent
 from app.tools import invoice_tools
@@ -467,6 +469,84 @@ async def web_edit_communication(
         db.commit()
         _audit(db, "communication", comm.id, "edit", current_user.email)
     return RedirectResponse(f"/web/invoices/{invoice_id}", status_code=303)
+
+
+# --- Recurring invoices -------------------------------------------------
+
+@router.get("/recurring", response_class=HTMLResponse)
+def web_list_recurring(request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    templates_list = recurring_invoice_service.list_recurring_invoices(db, DEFAULT_ORG_ID)
+    return templates.TemplateResponse("recurring_list.html", {
+        "request": request, "templates_list": templates_list, "today": date.today(), "current_user": current_user,
+    })
+
+
+@router.get("/recurring/new", response_class=HTMLResponse)
+def web_new_recurring_form(request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    customers = db.query(Customer).filter(Customer.organization_id == DEFAULT_ORG_ID).all()
+    return templates.TemplateResponse("recurring_form.html", {"request": request, "customers": customers, "error": None, "current_user": current_user})
+
+
+@router.post("/recurring/new", response_class=HTMLResponse)
+async def web_create_recurring(request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    form = await request.form()
+    items = _parse_items_from_form(form)
+    customers = db.query(Customer).filter(Customer.organization_id == DEFAULT_ORG_ID).all()
+
+    try:
+        payload = RecurringInvoiceCreate(
+            customer_id=int(form["customer_id"]),
+            name=form["name"],
+            frequency=form["frequency"],
+            next_run_date=form["next_run_date"],
+            due_days=int(form.get("due_days") or 30),
+            tax=Decimal(form.get("tax") or "0"),
+            discount=Decimal(form.get("discount") or "0"),
+            currency=form.get("currency") or "USD",
+            payment_terms=form.get("payment_terms") or "Net 30",
+            items=items,
+        )
+    except (ValueError, KeyError) as e:
+        return templates.TemplateResponse(
+            "recurring_form.html",
+            {"request": request, "customers": customers, "error": str(e), "current_user": current_user},
+            status_code=422,
+        )
+
+    template = recurring_invoice_service.create_recurring_invoice(db, DEFAULT_ORG_ID, payload)
+    _audit(db, "recurring_invoice", template.id, "create", current_user.email)
+    return RedirectResponse("/web/recurring", status_code=303)
+
+
+@router.post("/recurring/{recurring_id}/toggle")
+def web_toggle_recurring(recurring_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    template = recurring_invoice_service.get_recurring_invoice(db, recurring_id)
+    if template is not None:
+        recurring_invoice_service.set_active(db, template, not template.is_active)
+        _audit(db, "recurring_invoice", template.id, "toggle_active", current_user.email, {"is_active": template.is_active})
+    return RedirectResponse("/web/recurring", status_code=303)
+
+
+@router.post("/recurring/{recurring_id}/delete")
+def web_delete_recurring(recurring_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    template = recurring_invoice_service.get_recurring_invoice(db, recurring_id)
+    if template is not None:
+        recurring_invoice_service.delete_recurring_invoice(db, template)
+        _audit(db, "recurring_invoice", recurring_id, "delete", current_user.email)
+    return RedirectResponse("/web/recurring", status_code=303)
+
+
+@router.post("/recurring/generate-due")
+def web_generate_due_recurring(db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    """The manual trigger for a person clicking "Generate due invoices
+    now". Also the same route an external scheduler (Render Cron Jobs,
+    or any host that can hit a URL on a schedule) would call for real
+    automation - this app has no background job runner of its own, see
+    recurring_invoice_service.py's module docstring."""
+    created = recurring_invoice_service.generate_due_invoices(db, DEFAULT_ORG_ID)
+    for invoice in created:
+        _audit(db, "invoice", invoice.id, "create", "system (recurring)", {"recurring": True})
+    return RedirectResponse("/web/recurring", status_code=303)
 
 
 # --- Payments / Communications ---------------------------------------------

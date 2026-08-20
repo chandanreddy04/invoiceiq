@@ -965,3 +965,75 @@ def test_stripe_webhook_rejects_unsigned_request_and_does_not_mark_paid(client, 
         assert inv.payment_status.value == "unpaid"
     finally:
         db.close()
+
+
+def test_create_and_list_recurring_invoice(client, mock_ollama_chat):
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    customer_id = _seed_customer(client)
+
+    resp = client.post("/web/recurring/new", data={
+        "customer_id": str(customer_id), "name": "Monthly retainer", "frequency": "monthly",
+        "next_run_date": "2026-01-01", "due_days": "30", "currency": "USD", "payment_terms": "Net 30",
+        "tax": "0", "discount": "0",
+        "item_description_0": "Retainer", "item_quantity_0": "1", "item_unit_price_0": "500",
+    }, follow_redirects=False)
+    assert resp.status_code == 303
+
+    list_resp = client.get("/web/recurring")
+    assert "Monthly retainer" in list_resp.text
+
+
+def test_generate_due_recurring_creates_real_invoice(client, mock_ollama_chat):
+    from decimal import Decimal
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    customer_id = _seed_customer(client)
+
+    client.post("/web/recurring/new", data={
+        "customer_id": str(customer_id), "name": "Weekly cleanup", "frequency": "weekly",
+        "next_run_date": "2026-01-01", "due_days": "7", "currency": "USD", "payment_terms": "Net 7",
+        "tax": "0", "discount": "0",
+        "item_description_0": "Cleanup service", "item_quantity_0": "1", "item_unit_price_0": "75",
+    })
+
+    from app.models.models import Invoice
+    before_count = client.session_factory().query(Invoice).count()
+
+    resp = client.post("/web/recurring/generate-due", follow_redirects=False)
+    assert resp.status_code == 303
+
+    db = client.session_factory()
+    try:
+        after_count = db.query(Invoice).count()
+        assert after_count == before_count + 1
+        new_invoice = db.query(Invoice).order_by(Invoice.id.desc()).first()
+        assert new_invoice.total == Decimal("75.00")
+        assert new_invoice.customer_id == customer_id
+    finally:
+        db.close()
+
+
+def test_toggle_and_delete_recurring_invoice(client, mock_ollama_chat):
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    customer_id = _seed_customer(client)
+
+    client.post("/web/recurring/new", data={
+        "customer_id": str(customer_id), "name": "Toggle test", "frequency": "monthly",
+        "next_run_date": "2026-01-01", "due_days": "30", "currency": "USD", "payment_terms": "Net 30",
+        "tax": "0", "discount": "0",
+        "item_description_0": "X", "item_quantity_0": "1", "item_unit_price_0": "10",
+    })
+
+    from app.models.models import RecurringInvoice
+    db = client.session_factory()
+    template_id = db.query(RecurringInvoice).filter(RecurringInvoice.name == "Toggle test").first().id
+    db.close()
+
+    client.post(f"/web/recurring/{template_id}/toggle")
+    db = client.session_factory()
+    assert db.query(RecurringInvoice).filter(RecurringInvoice.id == template_id).first().is_active is False
+    db.close()
+
+    client.post(f"/web/recurring/{template_id}/delete")
+    db = client.session_factory()
+    assert db.query(RecurringInvoice).filter(RecurringInvoice.id == template_id).count() == 0
+    db.close()

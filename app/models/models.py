@@ -13,7 +13,7 @@ UUIDs later is a column-type change, not a redesign.
 import enum
 
 from sqlalchemy import (
-    Column, Integer, String, Numeric, Date, DateTime, ForeignKey, Enum
+    Column, Integer, String, Numeric, Date, DateTime, ForeignKey, Enum, Boolean
 )
 from sqlalchemy.orm import relationship
 
@@ -223,12 +223,13 @@ class AgentLog(Base):
 
 class Communication(Base):
     """
-    Phase 7: a drafted (and, once approved, sent) message. Nothing in
-    this app ever actually sends a real email - there's no SMTP
-    integration - so "sent" is a simulated status change after a human
-    clicks approve, the same pattern the project design uses for
-    simulated payments (Section 2). The point being demonstrated is
-    the human-in-the-loop gate itself, not real email delivery.
+    Phase 7: a drafted (and, once approved, sent) message. "sent" is a
+    simulated status change by default (no SMTP configured) - the same
+    pattern this project uses for simulated payments, demonstrating the
+    human-in-the-loop approval gate itself. Setting SMTP_HOST/USER/
+    PASSWORD (see app/services/email_service.py) makes it a genuine
+    SMTP send instead; a real send that fails lands in "send_failed"
+    rather than silently pretending to succeed.
     """
     __tablename__ = "communications"
 
@@ -237,7 +238,7 @@ class Communication(Base):
     recipient = Column(String(255), nullable=False)
     subject = Column(String(255), nullable=False)
     body = Column(String(3000), nullable=False)
-    status = Column(String(20), nullable=False, default="draft")  # draft | sent
+    status = Column(String(20), nullable=False, default="draft")  # draft | sent | send_failed | rejected
     created_at = Column(DateTime, default=utcnow_naive)
     sent_at = Column(DateTime, nullable=True)
 
@@ -307,3 +308,58 @@ class AuditLog(Base):
     performed_by = Column(String(255), nullable=False)    # user email, or "system" for unauthenticated/API actions
     timestamp = Column(DateTime, default=utcnow_naive)
     details_json = Column(String(1000), nullable=True)
+
+
+class RecurringFrequency(str, enum.Enum):
+    weekly = "weekly"
+    monthly = "monthly"
+    quarterly = "quarterly"
+    yearly = "yearly"
+
+
+class RecurringInvoice(Base):
+    """
+    Real gap from a "could a local business actually run on this"
+    review: every invoice was a one-off - a business billing the same
+    customer every month (a retainer, a subscription) had no help at
+    all with that pattern, just re-typing the same invoice by hand each
+    time. This is a reusable template, not an invoice itself -
+    recurring_invoice_service.generate_due_invoices() turns a due one
+    into a real Invoice through the exact same invoice_service.create_
+    invoice() path everything else uses, so fraud/classification still
+    run on every generated invoice like normal.
+
+    Outgoing/customer-only - there's no equivalent concept for a
+    vendor invoice; those arrive from the vendor on their own schedule,
+    we don't generate them.
+    """
+    __tablename__ = "recurring_invoices"
+
+    id = Column(Integer, primary_key=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False)
+    name = Column(String(255), nullable=False)  # e.g. "Monthly retainer - Riverside Cafe"
+    frequency = Column(Enum(RecurringFrequency), nullable=False)
+    next_run_date = Column(Date, nullable=False)
+    due_days = Column(Integer, nullable=False, default=30)  # generated invoice's due_date = its invoice_date + this
+    currency = Column(String(3), nullable=False, default="USD")
+    tax = Column(Numeric(12, 2), nullable=False, default=0)
+    discount = Column(Numeric(12, 2), nullable=False, default=0)
+    payment_terms = Column(String(50), default="Net 30")
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=utcnow_naive)
+
+    customer = relationship("Customer")
+    items = relationship("RecurringInvoiceItem", back_populates="recurring_invoice", cascade="all, delete-orphan")
+
+
+class RecurringInvoiceItem(Base):
+    __tablename__ = "recurring_invoice_items"
+
+    id = Column(Integer, primary_key=True)
+    recurring_invoice_id = Column(Integer, ForeignKey("recurring_invoices.id"), nullable=False)
+    description = Column(String(500), nullable=False)
+    quantity = Column(Numeric(12, 3), nullable=False, default=1)
+    unit_price = Column(Numeric(12, 2), nullable=False, default=0)
+
+    recurring_invoice = relationship("RecurringInvoice", back_populates="items")

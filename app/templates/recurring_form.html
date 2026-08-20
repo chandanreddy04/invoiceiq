@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}New Recurring Invoice - InvoiceIQ{% endblock %}
+{% block content %}
+<h1>🔁 New Recurring Invoice</h1>
+<p class="confidence">A reusable template - each time it comes due, a real invoice is generated through the same pipeline as any other (fraud check, classification, everything).</p>
+
+{% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+
+<form method="post" action="/web/recurring/new">
+    <div class="row">
+        <div>
+            <label>Name (for your own reference)</label>
+            <input type="text" name="name" placeholder="Monthly retainer - Riverside Cafe" required>
+        </div>
+        <div>
+            <label>Customer</label>
+            <select name="customer_id" required>
+                <option value="">-- select --</option>
+                {% for c in customers %}
+                <option value="{{ c.id }}">{{ c.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+    </div>
+
+    <div class="row">
+        <div>
+            <label>Frequency</label>
+            <select name="frequency">
+                <option value="weekly">Weekly</option>
+                <option value="monthly" selected>Monthly</option>
+                <option value="quarterly">Quarterly</option>
+                <option value="yearly">Yearly</option>
+            </select>
+        </div>
+        <div>
+            <label>First run date</label>
+            <input type="date" name="next_run_date" required>
+        </div>
+        <div>
+            <label>Due days after each invoice date</label>
+            <input type="number" name="due_days" value="30">
+        </div>
+    </div>
+
+    <div class="row">
+        <div>
+            <label>Currency</label>
+            <input type="text" name="currency" maxlength="3" value="USD">
+        </div>
+        <div>
+            <label>Payment terms</label>
+            <input type="text" name="payment_terms" value="Net 30">
+        </div>
+        <div>
+            <label>Tax</label>
+            <input type="number" step="0.01" name="tax" value="0">
+        </div>
+        <div>
+            <label>Discount</label>
+            <input type="number" step="0.01" name="discount" value="0">
+        </div>
+    </div>
+
+    <h3>Line items (billed every cycle)</h3>
+    <table class="items-table">
+        <tr><th>Description</th><th>Quantity</th><th>Unit price</th></tr>
+        {% for i in range(8) %}
+        <tr>
+            <td><input type="text" name="item_description_{{ i }}"></td>
+            <td><input type="number" step="0.001" name="item_quantity_{{ i }}"></td>
+            <td><input type="number" step="0.01" name="item_unit_price_{{ i }}"></td>
+        </tr>
+        {% endfor %}
+    </table>
+    <p class="confidence">Leave rows blank to skip them.</p>
+
+    <button type="submit">Create recurring invoice</button>
+</form>
+{% endblock %}
