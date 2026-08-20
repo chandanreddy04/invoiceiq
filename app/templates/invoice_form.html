@@ -178,6 +178,35 @@ function streamRiskExplanation(invoiceId) {
 </form>
 {% endif %}
 
+{% if invoice.direction.value == "outgoing" %}
+<h3>Credit Notes</h3>
+<p class="confidence">A credit note references this invoice rather than editing it - the invoice stays the historical record of what was actually billed. Issuing one does not change this invoice's payment status automatically; that's still a separate, explicit decision.</p>
+{% for cn in credit_notes %}
+<p>
+    <strong>{{ cn.credit_note_number }}</strong> — {{ cn.amount }} {{ cn.currency }} — {{ cn.reason }}
+    <span class="confidence">({{ cn.created_at.strftime("%Y-%m-%d") }}, by {{ cn.created_by }})</span>
+    · <a href="/web/credit-notes/{{ cn.id }}/pdf" target="_blank" rel="noopener">📄 PDF</a>
+</p>
+{% endfor %}
+{% if remaining_creditable > 0 %}
+<form method="post" action="/web/invoices/{{ invoice.id }}/credit-notes/new" style="margin-top:0.5rem;">
+    <div class="row">
+        <div>
+            <label>Reason</label>
+            <input type="text" name="reason" placeholder="Returned item / billing correction" required>
+        </div>
+        <div>
+            <label>Amount (up to {{ remaining_creditable }} {{ invoice.currency }} remaining)</label>
+            <input type="number" step="0.01" name="amount" max="{{ remaining_creditable }}" required>
+        </div>
+    </div>
+    <button type="submit" class="secondary">Issue credit note</button>
+</form>
+{% else %}
+<p class="confidence">This invoice has been fully credited.</p>
+{% endif %}
+{% endif %}
+
 {% if comms %}
 <h3>Communications</h3>
 {% for c in comms %}

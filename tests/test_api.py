@@ -1037,3 +1037,73 @@ def test_toggle_and_delete_recurring_invoice(client, mock_ollama_chat):
     db = client.session_factory()
     assert db.query(RecurringInvoice).filter(RecurringInvoice.id == template_id).count() == 0
     db.close()
+
+
+def test_issue_credit_note_and_download_its_pdf(client, mock_ollama_chat):
+    from decimal import Decimal
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    customer_id = _seed_customer(client)
+    resp = client.post("/invoices", json={
+        "direction": "outgoing", "invoice_number": "CN-ROUTE-1", "customer_id": customer_id,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "Consulting", "quantity": 1, "unit_price": 200}],
+    })
+    invoice_id = resp.json()["id"]
+
+    cn_resp = client.post(f"/web/invoices/{invoice_id}/credit-notes/new", data={
+        "reason": "Client returned half the order", "amount": "50.00",
+    }, follow_redirects=False)
+    assert cn_resp.status_code == 303
+
+    from app.models.models import CreditNote
+    db = client.session_factory()
+    try:
+        note = db.query(CreditNote).filter(CreditNote.invoice_id == invoice_id).first()
+        assert note is not None
+        assert note.amount == Decimal("50.00")
+        assert note.credit_note_number == "CN-0001"
+        note_id = note.id
+    finally:
+        db.close()
+
+    pdf_resp = client.get(f"/web/credit-notes/{note_id}/pdf")
+    assert pdf_resp.status_code == 200
+    assert pdf_resp.headers["content-type"] == "application/pdf"
+    assert pdf_resp.content[:5] == b"%PDF-"
+
+
+def test_credit_note_over_invoice_total_is_rejected_not_silently_clamped(client, mock_ollama_chat):
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    customer_id = _seed_customer(client)
+    resp = client.post("/invoices", json={
+        "direction": "outgoing", "invoice_number": "CN-ROUTE-2", "customer_id": customer_id,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "Consulting", "quantity": 1, "unit_price": 100}],
+    })
+    invoice_id = resp.json()["id"]
+
+    client.post(f"/web/invoices/{invoice_id}/credit-notes/new", data={"reason": "Too much", "amount": "500.00"})
+
+    from app.models.models import CreditNote
+    db = client.session_factory()
+    try:
+        assert db.query(CreditNote).filter(CreditNote.invoice_id == invoice_id).count() == 0
+    finally:
+        db.close()
+
+
+def test_invoice_page_shows_remaining_creditable_and_issued_notes(client, mock_ollama_chat):
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    customer_id = _seed_customer(client)
+    resp = client.post("/invoices", json={
+        "direction": "outgoing", "invoice_number": "CN-ROUTE-3", "customer_id": customer_id,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "Consulting", "quantity": 1, "unit_price": 100}],
+    })
+    invoice_id = resp.json()["id"]
+
+    client.post(f"/web/invoices/{invoice_id}/credit-notes/new", data={"reason": "Partial refund", "amount": "40.00"})
+
+    page = client.get(f"/web/invoices/{invoice_id}").text
+    assert "CN-0001" in page
+    assert "Partial refund" in page

@@ -151,6 +151,7 @@ class Invoice(Base):
     fraud_flags = relationship("FraudFlag", cascade="all, delete-orphan")
     agent_logs = relationship("AgentLog", cascade="all, delete-orphan")
     communications = relationship("Communication", cascade="all, delete-orphan")
+    credit_notes = relationship("CreditNote", cascade="all, delete-orphan")
 
 
 class InvoiceItem(Base):
@@ -363,3 +364,34 @@ class RecurringInvoiceItem(Base):
     unit_price = Column(Numeric(12, 2), nullable=False, default=0)
 
     recurring_invoice = relationship("RecurringInvoice", back_populates="items")
+
+
+class CreditNote(Base):
+    """
+    Real gap from a "could a local business actually run on this"
+    review: no way to record a refund or a billing correction against
+    an outgoing invoice - the invoice's own line items and total are
+    the original bill and should stay that way as a historical record;
+    a credit note is a separate document referencing it, the same way
+    real accounting handles this (never edit the original invoice).
+
+    Deliberately does NOT auto-change Invoice.payment_status - that
+    field is only ever changed by an explicit human action elsewhere
+    in this app (mark paid, an owner's status override), and a credit
+    note isn't the same fact as "we received money." A human decides
+    what a credit note means for the invoice's status, same as every
+    other financial status change in this app.
+    """
+    __tablename__ = "credit_notes"
+
+    id = Column(Integer, primary_key=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=False)
+    credit_note_number = Column(String(100), nullable=False)
+    reason = Column(String(500), nullable=False)
+    amount = Column(Numeric(12, 2), nullable=False)
+    currency = Column(String(3), nullable=False)
+    created_by = Column(String(255), nullable=False)
+    created_at = Column(DateTime, default=utcnow_naive)
+
+    invoice = relationship("Invoice", back_populates="credit_notes")

@@ -27,7 +27,7 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_RIGHT
 
-from app.models.models import Invoice
+from app.models.models import CreditNote, Invoice
 
 BUSINESS_NAME = "Maple Street Bakery Supply Co."
 
@@ -121,6 +121,38 @@ def generate_invoice_pdf(invoice: Invoice) -> bytes:
         totals_lines.append(money("Discount", -invoice.discount))
     totals_lines.append(money("Total Due", invoice.total, bold=True))
     story.append(Paragraph("<br/>".join(totals_lines), right_style))
+
+    doc.build(story)
+    return buffer.getvalue()
+
+
+def generate_credit_note_pdf(credit_note: CreditNote, invoice: Invoice) -> bytes:
+    """Same visual language as generate_invoice_pdf() above, but its
+    own much simpler document - a credit note references the original
+    invoice, it never repeats or re-derives its line items."""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=letter,
+        topMargin=0.75 * inch, bottomMargin=0.75 * inch,
+        leftMargin=0.75 * inch, rightMargin=0.75 * inch,
+    )
+    styles = getSampleStyleSheet()
+
+    customer = invoice.customer
+    story = [
+        Paragraph(BUSINESS_NAME, styles["Title"]),
+        Spacer(1, 0.15 * inch),
+        Paragraph(f"CREDIT NOTE #{credit_note.credit_note_number}", styles["Heading2"]),
+        Spacer(1, 0.2 * inch),
+        Paragraph(f"<b>Issued to:</b> {customer.name if customer else '-'}", styles["Normal"]),
+        Spacer(1, 0.15 * inch),
+        Paragraph(f"<b>Against invoice:</b> #{invoice.invoice_number}", styles["Normal"]),
+        Paragraph(f"<b>Date issued:</b> {credit_note.created_at.date()}", styles["Normal"]),
+        Spacer(1, 0.2 * inch),
+        Paragraph(f"<b>Reason:</b> {credit_note.reason}", styles["Normal"]),
+        Spacer(1, 0.3 * inch),
+        Paragraph(f"<b>Credit amount: {credit_note.amount:.2f} {credit_note.currency}</b>", styles["Heading3"]),
+    ]
 
     doc.build(story)
     return buffer.getvalue()

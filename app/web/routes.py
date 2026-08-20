@@ -28,11 +28,11 @@ from app.utils.time import utcnow_naive
 from app.database.session import get_db
 from app.models.models import (
     Invoice, Customer, Vendor, InvoiceDirection, PaymentStatus, InvoiceStatus,
-    FraudFlag, AgentLog, Communication, ApprovalRequest, User, AuditLog,
+    FraudFlag, AgentLog, Communication, ApprovalRequest, User, AuditLog, CreditNote,
 )
 from app.schemas.invoice import InvoiceCreate, InvoiceItemCreate, InvoiceUpdate
 from app.schemas.party import VendorCreate, CustomerCreate
-from app.services import invoice_service, extraction_service, llm_extraction_service, invoice_pdf_service, email_service, recurring_invoice_service
+from app.services import invoice_service, extraction_service, llm_extraction_service, invoice_pdf_service, email_service, recurring_invoice_service, credit_note_service
 from app.schemas.recurring_invoice import RecurringInvoiceCreate
 from app.services.validation_service import InvoiceValidationError
 from app.agents import orchestrator, communication_agent, payment_ap_agent, collections_agent, fraud_risk_agent
@@ -318,11 +318,14 @@ def web_view_invoice(invoice_id: int, request: Request, db: Session = Depends(ge
         db.query(Communication).filter(Communication.invoice_id == invoice_id).order_by(Communication.created_at.desc()).all()
         if invoice else []
     )
+    credit_notes = credit_note_service.get_credit_notes_for_invoice(db, invoice_id) if invoice else []
+    remaining_creditable = credit_note_service.remaining_creditable(db, invoice) if invoice else None
     return templates.TemplateResponse(
         "invoice_form.html",
         {
             "request": request, "invoice": invoice, "vendors": vendors, "customers": customers,
             "values": {}, "form_action": f"/web/invoices/{invoice_id}", "fraud_flag": fraud_flag, "comms": comms,
+            "credit_notes": credit_notes, "remaining_creditable": remaining_creditable,
             "current_user": current_user,
         },
     )
@@ -985,3 +988,32 @@ def web_generate_pay_link(invoice_id: int, db: Session = Depends(get_db), curren
     if invoice is not None:
         invoice_service.get_or_create_public_token(db, invoice)
     return RedirectResponse(f"/web/invoices/{invoice_id}", status_code=303)
+
+
+@router.post("/invoices/{invoice_id}/credit-notes/new")
+async def web_create_credit_note(invoice_id: int, request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    form = await request.form()
+    invoice = invoice_service.get_invoice(db, invoice_id)
+    if invoice is not None:
+        try:
+            amount = Decimal(form.get("amount") or "0")
+            credit_note_service.create_credit_note(
+                db, DEFAULT_ORG_ID, invoice, reason=form.get("reason", "").strip(), amount=amount, created_by=current_user.email,
+            )
+            _audit(db, "credit_note", invoice.id, "create", current_user.email, {"amount": str(amount)})
+        except (credit_note_service.CreditNoteError, InvalidOperation) as e:
+            logger.warning("Credit note rejected for invoice %s: %s", invoice_id, e)
+    return RedirectResponse(f"/web/invoices/{invoice_id}", status_code=303)
+
+
+@router.get("/credit-notes/{credit_note_id}/pdf")
+def web_download_credit_note_pdf(credit_note_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    note = db.get(CreditNote, credit_note_id)
+    if note is None:
+        raise HTTPException(status_code=404, detail="Credit note not found.")
+    invoice = invoice_service.get_invoice(db, note.invoice_id)
+    pdf_bytes = invoice_pdf_service.generate_credit_note_pdf(note, invoice)
+    return Response(
+        content=pdf_bytes, media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{note.credit_note_number}.pdf"'},
+    )
