@@ -68,11 +68,11 @@
 {% if stats.suspicious_invoices %}
 <h3>Flagged invoices</h3>
 <table>
-    <tr><th>Invoice #</th><th>Vendor</th><th>Total</th><th>Risk</th><th>Status</th></tr>
+    <tr><th>Invoice #</th><th>Vendor / Customer</th><th>Total</th><th>Risk</th><th>Status</th></tr>
     {% for inv in stats.suspicious_invoices %}
     <tr>
         <td><a href="/web/invoices/{{ inv.id }}">{{ inv.invoice_number }}</a></td>
-        <td>{{ inv.vendor.name if inv.vendor else "-" }}</td>
+        <td>{{ inv.vendor.name if inv.vendor else (inv.customer.name if inv.customer else "-") }}</td>
         <td>{{ inv.total }} {{ inv.currency }}</td>
         <td>{{ (inv.risk_score|float * 100)|round }}%</td>
         <td>{{ inv.invoice_status.value }}</td>
