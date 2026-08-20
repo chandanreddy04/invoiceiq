@@ -485,7 +485,7 @@ def web_stream_payment_narration(db: Session = Depends(get_db), current_user: Us
 
 @router.get("/collections", response_class=HTMLResponse)
 def web_collections(request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
-    result = collections_agent.prioritize_collections(db, DEFAULT_ORG_ID)
+    result = orchestrator.run_collections_scan(db, DEFAULT_ORG_ID)
     return templates.TemplateResponse("collections.html", {"request": request, "result": result, "current_user": current_user})
 
 

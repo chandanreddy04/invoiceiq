@@ -23,19 +23,24 @@ import uuid
 from sqlalchemy.orm import Session
 
 from app.models.models import Invoice, AgentLog
-from app.agents import fraud_risk_agent, classification_agent, financial_analysis_agent
+from app.agents import fraud_risk_agent, classification_agent, financial_analysis_agent, collections_agent
 
 logger = logging.getLogger(__name__)
 
 
-def _log_step(db: Session, task_id: str, invoice_id: int, agent_name: str, fn, input_summary: str):
+def _log_step(db: Session, task_id: str, invoice_id: int, agent_name: str, fn, input_summary: str, summarize=str):
+    """summarize turns fn()'s return value into the human-readable text
+    stored in AgentLog.output_summary - str() by default (fine for the
+    small dicts/strings every other agent here returns), overridable
+    for an agent like collections_agent whose result dict holds raw
+    Invoice ORM objects that str() would render as unreadable reprs."""
     start = time.monotonic()
     try:
         result = fn()
         duration_ms = int((time.monotonic() - start) * 1000)
         db.add(AgentLog(
             task_id=task_id, invoice_id=invoice_id, agent_name=agent_name, status="success",
-            input_summary=input_summary, output_summary=str(result)[:500], duration_ms=duration_ms,
+            input_summary=input_summary, output_summary=summarize(result)[:500], duration_ms=duration_ms,
         ))
         db.commit()
         return result
@@ -88,3 +93,19 @@ def route_query(db: Session, org_id: int, question: str) -> dict:
         input_summary=question[:200],
     )
     return result or {"question": question, "answer": "The assistant is unavailable right now.", "result_count": 0}
+
+
+def run_collections_scan(db: Session, org_id: int) -> dict:
+    """The third kind of task the Orchestrator handles: scanning every
+    outstanding customer invoice and prioritizing which to chase -
+    triggered by visiting the Collections page. Unlike Payment/AP
+    (its incoming-side mirror), this run is logged to AgentLog, so it
+    shows up on the Agent Activity page like every other agent's work."""
+    task_id = str(uuid.uuid4())[:8]
+    result = _log_step(
+        db, task_id, None, "collections_agent",
+        lambda: collections_agent.prioritize_collections(db, org_id),
+        input_summary=f"org #{org_id}: scan outstanding customer invoices",
+        summarize=lambda r: f"{len(r['recommended'])} recommended, {len(r['escalate'])} to escalate",
+    )
+    return result or {"recommended": [], "escalate": [], "explanation": "The assistant is unavailable right now."}
