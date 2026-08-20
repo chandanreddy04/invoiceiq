@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Collections - InvoiceIQ{% endblock %}
+{% block content %}
+<h1>📥 Collections Priorities</h1>
+<p class="confidence">The Collections/AR Agent only recommends - it never contacts anyone. Use "Draft reminder" below (or the invoice's own page) to have the Communication Agent write a message, then review and send it yourself from Communications.</p>
+
+<div class="flash success">
+    <span id="collections-narration">{{ result.explanation }}</span>
+    <br><button type="button" id="regen-narration-btn" onclick="streamCollectionsNarration()" style="margin-top:0.5rem;font-size:0.85em;">🔄 Regenerate explanation (live)</button>
+</div>
+<script>
+function streamCollectionsNarration() {
+    const el = document.getElementById("collections-narration");
+    const btn = document.getElementById("regen-narration-btn");
+    el.textContent = "";
+    btn.disabled = true;
+    btn.textContent = "Generating...";
+    const source = new EventSource("/web/collections/narration/stream");
+    source.onmessage = (event) => { el.textContent += event.data; };
+    source.addEventListener("done", () => { source.close(); btn.disabled = false; btn.textContent = "🔄 Regenerate explanation (live)"; });
+    source.onerror = () => { source.close(); btn.disabled = false; btn.textContent = "🔄 Regenerate explanation (live)"; };
+}
+</script>
+
+<h3>Recommended follow-up order</h3>
+{% if result.recommended %}
+<table>
+    <tr><th>Priority</th><th>Invoice #</th><th>Customer</th><th>Total</th><th>Due date</th><th></th></tr>
+    {% for inv in result.recommended %}
+    <tr>
+        <td>{{ loop.index }}</td>
+        <td><a href="/web/invoices/{{ inv.id }}">{{ inv.invoice_number }}</a></td>
+        <td>{{ inv.customer.name if inv.customer else "-" }}</td>
+        <td>{{ inv.total }} {{ inv.currency }}</td>
+        <td>{{ inv.due_date }}</td>
+        <td><form method="post" action="/web/invoices/{{ inv.id }}/draft-reminder"><button type="submit" style="font-size:0.85em;">✉️ Draft reminder</button></form></td>
+    </tr>
+    {% endfor %}
+</table>
+{% else %}
+<p>Nothing to chase right now.</p>
+{% endif %}
+
+{% if result.escalate %}
+<h3>⚠️ Escalate - contact personally, not just an automated reminder</h3>
+<table>
+    <tr><th>Invoice #</th><th>Customer</th><th>Total</th><th>Risk</th><th></th></tr>
+    {% for inv in result.escalate %}
+    <tr>
+        <td><a href="/web/invoices/{{ inv.id }}">{{ inv.invoice_number }}</a></td>
+        <td>{{ inv.customer.name if inv.customer else "-" }}</td>
+        <td>{{ inv.total }} {{ inv.currency }}</td>
+        <td>{{ (inv.risk_score|float * 100)|round }}%</td>
+        <td><form method="post" action="/web/invoices/{{ inv.id }}/draft-reminder"><button type="submit" style="font-size:0.85em;">✉️ Draft reminder</button></form></td>
+    </tr>
+    {% endfor %}
+</table>
+{% endif %}
+{% endblock %}

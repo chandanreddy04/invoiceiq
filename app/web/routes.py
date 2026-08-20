@@ -33,7 +33,7 @@ from app.schemas.invoice import InvoiceCreate, InvoiceItemCreate, InvoiceUpdate
 from app.schemas.party import VendorCreate, CustomerCreate
 from app.services import invoice_service, extraction_service, llm_extraction_service
 from app.services.validation_service import InvoiceValidationError
-from app.agents import orchestrator, communication_agent, payment_ap_agent, fraud_risk_agent
+from app.agents import orchestrator, communication_agent, payment_ap_agent, collections_agent, fraud_risk_agent
 from app.tools import invoice_tools
 from app.security.auth import verify_password, create_session_token
 from app.security.deps import require_login, require_owner, get_current_user, SESSION_COOKIE_NAME
@@ -475,6 +475,30 @@ def web_stream_payment_narration(db: Session = Depends(get_db), current_user: Us
     def _generate():
         try:
             for chunk in payment_ap_agent.explain_payments_stream(ranked, held):
+                yield f"data: {chunk.replace(chr(10), ' ')}\n\n"
+        except llm_extraction_service.LLMUnavailableError:
+            yield "data: [LLM unavailable]\n\n"
+        yield "event: done\ndata: \n\n"
+
+    return StreamingResponse(_generate(), media_type="text/event-stream")
+
+
+@router.get("/collections", response_class=HTMLResponse)
+def web_collections(request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    result = collections_agent.prioritize_collections(db, DEFAULT_ORG_ID)
+    return templates.TemplateResponse("collections.html", {"request": request, "result": result, "current_user": current_user})
+
+
+@router.get("/collections/narration/stream")
+def web_stream_collections_narration(db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    """SSE twin of web_collections()'s narration paragraph. Recomputes the
+    same ranking (rank_outstanding_receivables() is deterministic - no
+    LLM in it) and streams a fresh narration of it live."""
+    ranked, escalate = collections_agent.rank_outstanding_receivables(db, DEFAULT_ORG_ID)
+
+    def _generate():
+        try:
+            for chunk in collections_agent.explain_collections_stream(ranked, escalate):
                 yield f"data: {chunk.replace(chr(10), ' ')}\n\n"
         except llm_extraction_service.LLMUnavailableError:
             yield "data: [LLM unavailable]\n\n"
