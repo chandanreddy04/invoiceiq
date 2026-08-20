@@ -834,3 +834,134 @@ def test_approving_communication_marks_send_failed_on_real_smtp_error(client, mo
         assert comm.status == "send_failed"
     finally:
         db.close()
+
+
+def _create_outgoing_invoice_get_token(client, invoice_number="PUBLIC-PAGE-1"):
+    customer_id = _seed_customer(client)
+    resp = client.post("/invoices", json={
+        "direction": "outgoing", "invoice_number": invoice_number, "customer_id": customer_id,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "Consulting", "quantity": 1, "unit_price": 500}],
+    })
+    body = resp.json()
+    return body["id"], body["public_token"]
+
+
+def test_public_pay_page_shows_real_invoice_no_login_required(client):
+    """No _login() call anywhere in this test - that's the point."""
+    invoice_id, token = _create_outgoing_invoice_get_token(client)
+    resp = client.get(f"/pay/{token}")
+    assert resp.status_code == 200
+    assert "PUBLIC-PAGE-1" in resp.text
+    assert "500" in resp.text
+
+
+def test_public_pay_page_404s_for_unknown_token(client):
+    resp = client.get("/pay/not-a-real-token-at-all")
+    assert resp.status_code == 404
+
+
+def test_public_pay_page_never_shows_the_internal_staff_nav(client):
+    """The whole reason pay.html doesn't extend base.html - a customer
+    must never see Approvals/Agent Activity/Audit Log links."""
+    invoice_id, token = _create_outgoing_invoice_get_token(client)
+    resp = client.get(f"/pay/{token}")
+    assert "Agent Activity" not in resp.text
+    assert "Approvals" not in resp.text
+
+
+def test_public_pdf_download_works_without_login(client):
+    invoice_id, token = _create_outgoing_invoice_get_token(client)
+    resp = client.get(f"/pay/{token}/pdf")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/pdf"
+    assert resp.content[:5] == b"%PDF-"
+
+
+def test_public_checkout_returns_400_when_stripe_not_configured(client):
+    invoice_id, token = _create_outgoing_invoice_get_token(client)
+    resp = client.post(f"/pay/{token}/checkout")
+    assert resp.status_code == 400
+
+
+def test_public_checkout_redirects_to_stripe_when_configured(client, monkeypatch):
+    from app.services import payment_service
+    monkeypatch.setattr(payment_service, "STRIPE_SECRET_KEY", "sk_test_fake")
+    monkeypatch.setattr(payment_service, "create_checkout_session", lambda invoice, success_url, cancel_url: "https://checkout.stripe.com/fake")
+
+    invoice_id, token = _create_outgoing_invoice_get_token(client)
+    resp = client.post(f"/pay/{token}/checkout", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "https://checkout.stripe.com/fake"
+
+
+def test_public_checkout_skips_stripe_when_already_paid(client, monkeypatch):
+    from app.services import payment_service
+    monkeypatch.setattr(payment_service, "STRIPE_SECRET_KEY", "sk_test_fake")
+    called = []
+    monkeypatch.setattr(payment_service, "create_checkout_session", lambda *a, **kw: called.append(1) or "https://x")
+
+    invoice_id, token = _create_outgoing_invoice_get_token(client)
+    db = client.session_factory()
+    from app.models.models import Invoice, PaymentStatus
+    inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    inv.payment_status = PaymentStatus.paid
+    db.commit()
+    db.close()
+
+    resp = client.post(f"/pay/{token}/checkout", follow_redirects=False)
+    assert resp.status_code == 303
+    assert called == []  # never even attempted a new checkout for an already-paid invoice
+
+
+def test_stripe_webhook_marks_invoice_paid_on_valid_signed_event(client, monkeypatch):
+    import json
+    import stripe as stripe_sdk
+    from app.services import payment_service
+
+    monkeypatch.setattr(payment_service, "STRIPE_WEBHOOK_SECRET", "whsec_test_secret")
+
+    invoice_id, token = _create_outgoing_invoice_get_token(client, invoice_number="WEBHOOK-PAID-1")
+
+    payload = json.dumps({
+        "id": "evt_1", "type": "checkout.session.completed",
+        "data": {"object": {"id": "cs_1", "metadata": {"invoice_id": str(invoice_id)}}},
+    })
+    sig = stripe_sdk.WebhookSignature.generate_signature_header(payload, "whsec_test_secret")
+
+    resp = client.post("/stripe/webhook", content=payload, headers={"stripe-signature": sig})
+    assert resp.status_code == 200
+
+    from app.models.models import Invoice
+    db = client.session_factory()
+    try:
+        inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+        assert inv.payment_status.value == "paid"
+    finally:
+        db.close()
+
+
+def test_stripe_webhook_rejects_unsigned_request_and_does_not_mark_paid(client, monkeypatch):
+    """The security-critical case: a POST with no valid Stripe signature
+    must never be able to mark an invoice paid for free."""
+    import json
+    from app.services import payment_service
+
+    monkeypatch.setattr(payment_service, "STRIPE_WEBHOOK_SECRET", "whsec_real_secret")
+
+    invoice_id, token = _create_outgoing_invoice_get_token(client, invoice_number="WEBHOOK-SPOOF-1")
+
+    payload = json.dumps({
+        "id": "evt_2", "type": "checkout.session.completed",
+        "data": {"object": {"id": "cs_2", "metadata": {"invoice_id": str(invoice_id)}}},
+    })
+    resp = client.post("/stripe/webhook", content=payload, headers={"stripe-signature": "fake-unsigned-header"})
+    assert resp.status_code == 400
+
+    from app.models.models import Invoice
+    db = client.session_factory()
+    try:
+        inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+        assert inv.payment_status.value == "unpaid"
+    finally:
+        db.close()

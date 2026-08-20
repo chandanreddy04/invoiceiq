@@ -85,5 +85,6 @@ class InvoiceRead(BaseModel):
     confidence_score: Decimal | None
     risk_score: Decimal | None
     source_pdf_filename: str | None
+    public_token: str | None
     created_at: datetime
     items: list[InvoiceItemRead]

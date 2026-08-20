@@ -7,6 +7,7 @@ two interfaces.
 """
 
 import re
+import secrets
 from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import or_
@@ -86,6 +87,26 @@ def get_invoice(db: Session, invoice_id: int) -> Invoice | None:
     return with_items(db.query(Invoice)).filter(Invoice.id == invoice_id).first()
 
 
+def get_invoice_by_public_token(db: Session, token: str) -> Invoice | None:
+    return with_items(db.query(Invoice)).filter(Invoice.public_token == token).first()
+
+
+def get_or_create_public_token(db: Session, invoice: Invoice) -> str | None:
+    """Only outgoing invoices ever get one - there is no "customer
+    view" of an invoice we owe a vendor. secrets.token_urlsafe(24) is
+    ~192 bits of entropy - not sequentially guessable like the primary
+    key, which matters here since this token IS the access control for
+    /pay/<token> (no login required by design, so it has to be
+    unguessable rather than merely private)."""
+    if invoice.direction != InvoiceDirection.outgoing:
+        return None
+    if not invoice.public_token:
+        invoice.public_token = secrets.token_urlsafe(24)
+        db.commit()
+        db.refresh(invoice)
+    return invoice.public_token
+
+
 def create_invoice(db: Session, org_id: int, payload: InvoiceCreate) -> Invoice:
     """Raises InvoiceValidationError (from validation_service) on bad input."""
     validate_invoice_input(payload.items, payload.due_date, payload.invoice_date)
@@ -129,6 +150,8 @@ def create_invoice(db: Session, org_id: int, payload: InvoiceCreate) -> Invoice:
     db.add(invoice)
     db.commit()
     db.refresh(invoice)
+
+    get_or_create_public_token(db, invoice)
 
     # Phase 5: the Orchestrator now owns dispatching to whichever agents
     # a newly created invoice needs (fraud check, classification, ...),

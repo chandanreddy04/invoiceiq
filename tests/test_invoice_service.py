@@ -186,3 +186,32 @@ def test_suggest_next_invoice_number_ignores_non_matching_and_incoming_numbers(d
     invoice_service.create_invoice(db_session, org.id, make_payload(invoice_number="INV-9999", vendor_id=vendor.id, direction="incoming"))
 
     assert invoice_service.suggest_next_invoice_number(db_session, org.id) == "INV-0001"
+
+
+def test_create_invoice_auto_generates_public_token_for_outgoing(db_session, org, customer, mock_ollama_chat):
+    invoice = invoice_service.create_invoice(db_session, org.id, make_payload(customer_id=customer.id, direction="outgoing"))
+    assert invoice.public_token is not None
+    assert len(invoice.public_token) > 20
+
+
+def test_create_invoice_does_not_generate_public_token_for_incoming(db_session, org, vendor, mock_ollama_chat):
+    invoice = invoice_service.create_invoice(db_session, org.id, make_payload(vendor_id=vendor.id))
+    assert invoice.public_token is None
+
+
+def test_get_or_create_public_token_is_idempotent(db_session, org, customer, mock_ollama_chat):
+    invoice = invoice_service.create_invoice(db_session, org.id, make_payload(customer_id=customer.id, direction="outgoing"))
+    first = invoice_service.get_or_create_public_token(db_session, invoice)
+    second = invoice_service.get_or_create_public_token(db_session, invoice)
+    assert first == second
+
+
+def test_get_invoice_by_public_token_finds_the_right_invoice(db_session, org, customer, mock_ollama_chat):
+    invoice = invoice_service.create_invoice(db_session, org.id, make_payload(invoice_number="TOKEN-LOOKUP-1", customer_id=customer.id, direction="outgoing"))
+    found = invoice_service.get_invoice_by_public_token(db_session, invoice.public_token)
+    assert found is not None
+    assert found.invoice_number == "TOKEN-LOOKUP-1"
+
+
+def test_get_invoice_by_public_token_returns_none_for_unknown_token(db_session, org):
+    assert invoice_service.get_invoice_by_public_token(db_session, "not-a-real-token") is None

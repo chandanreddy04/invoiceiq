@@ -9,6 +9,14 @@
 
 {% if invoice and invoice.direction.value == "outgoing" %}
 <p><a href="/web/invoices/{{ invoice.id }}/pdf" target="_blank" rel="noopener">📄 Download invoice PDF</a></p>
+{% if invoice.public_token %}
+<p>🔗 Customer pay link: <a href="/pay/{{ invoice.public_token }}" target="_blank" rel="noopener">/pay/{{ invoice.public_token }}</a>
+    <span class="confidence">(no login needed - safe to share with the customer)</span></p>
+{% else %}
+<form method="post" action="/web/invoices/{{ invoice.id }}/generate-pay-link" style="margin-top:0.5rem;">
+    <button type="submit" class="secondary">🔗 Get a customer pay link</button>
+</form>
+{% endif %}
 {% endif %}
 
 {% if fraud_flag %}

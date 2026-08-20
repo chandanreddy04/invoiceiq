@@ -14,6 +14,7 @@ from app.core.config import APP_NAME, APP_ENV, LOG_LEVEL, ensure_runtime_directo
 from app.database.session import init_db, SessionLocal
 from app.api import customers, vendors, invoices
 from app.web import routes as web_routes
+from app.web import public_routes
 from app.security.deps import NotAuthenticated
 
 logging.basicConfig(
@@ -59,6 +60,7 @@ app.include_router(customers.router)
 app.include_router(vendors.router)
 app.include_router(invoices.router)
 app.include_router(web_routes.router)
+app.include_router(public_routes.router)
 
 
 @app.get("/health")

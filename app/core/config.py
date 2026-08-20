@@ -81,6 +81,22 @@ SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", SMTP_USER)
 # Sessions. Get one at https://dashboard.stripe.com/apikeys - test mode
 # keys (sk_test_...) work identically to live ones for this integration.
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+# Verifies that a POST to /stripe/webhook genuinely came from Stripe
+# (HMAC signature check) rather than trusting the request outright -
+# marking an invoice paid is exactly the kind of action that must never
+# be spoofable by anyone who can guess the URL. Get this from the
+# webhook's own settings page after creating it in the Stripe dashboard
+# (Developers -> Webhooks -> Add endpoint -> pointed at /stripe/webhook).
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+
+# The public origin this app is reachable at (e.g.
+# https://invoiceiq-owo3.onrender.com, or http://localhost:8000 for
+# local dev) - needed to build an absolute /pay/<token> link inside a
+# drafted email body and to tell Stripe where to redirect a customer
+# back to after paying. Empty by default; the pay-link line is simply
+# omitted from drafted emails until this is set, rather than shipping a
+# broken relative link.
+APP_BASE_URL = os.getenv("APP_BASE_URL", "")
 
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "./data/invoices"))
 MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "10"))

@@ -1,0 +1,50 @@
+{% extends "pay_base.html" %}
+{% block title %}Invoice #{{ invoice.invoice_number }}{% endblock %}
+{% block content %}
+<h1>{{ business_name }}</h1>
+<h2>Invoice #{{ invoice.invoice_number }}</h2>
+
+{% if just_paid %}
+<div class="flash success">Thank you! We're confirming your payment now - it may take a minute to show as paid below.</div>
+{% elif just_cancelled %}
+<div class="flash info">Checkout was cancelled. Your invoice hasn't been charged - you can try again below whenever you're ready.</div>
+{% endif %}
+
+<p>
+    <strong>Billed to:</strong> {{ invoice.customer.name }}<br>
+    <strong>Invoice date:</strong> {{ invoice.invoice_date }}<br>
+    <strong>Due date:</strong> {{ invoice.due_date }}<br>
+    <strong>Status:</strong> <span class="badge {{ 'paid' if invoice.payment_status.value == 'paid' else 'unpaid' }}">{{ invoice.payment_status.value }}</span>
+</p>
+
+<table>
+    <tr><th>Description</th><th>Qty</th><th>Unit Price</th><th>Line Total</th></tr>
+    {% for item in invoice.items %}
+    <tr>
+        <td>{{ item.description }}</td>
+        <td>{{ item.quantity }}</td>
+        <td>{{ item.unit_price }} {{ invoice.currency }}</td>
+        <td>{{ item.line_total }} {{ invoice.currency }}</td>
+    </tr>
+    {% endfor %}
+</table>
+
+<p class="totals">
+    Subtotal: {{ invoice.subtotal }} {{ invoice.currency }}<br>
+    {% if invoice.tax %}Tax: {{ invoice.tax }} {{ invoice.currency }}<br>{% endif %}
+    {% if invoice.discount %}Discount: -{{ invoice.discount }} {{ invoice.currency }}<br>{% endif %}
+    <strong>Total due: {{ invoice.total }} {{ invoice.currency }}</strong>
+</p>
+
+<a class="btn secondary" href="/pay/{{ invoice.public_token }}/pdf">📄 Download PDF</a>
+
+{% if invoice.payment_status.value == "paid" %}
+<p><strong>✅ This invoice has been paid. Thank you!</strong></p>
+{% elif payments_enabled %}
+<form method="post" action="/pay/{{ invoice.public_token }}/checkout">
+    <button type="submit">💳 Pay {{ invoice.total }} {{ invoice.currency }} now</button>
+</form>
+{% else %}
+<p class="confidence" style="color:#666;">Online payment isn't set up for this business yet - please pay using whatever method they've asked for.</p>
+{% endif %}
+{% endblock %}

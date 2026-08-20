@@ -22,11 +22,25 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
+from app.core.config import APP_BASE_URL
 from app.models.models import Invoice, Communication, InvoiceDirection, ApprovalRequest
 from app.schemas.communication import DraftedReminder
 from app.services.llm_client import chat
 
 logger = logging.getLogger(__name__)
+
+
+def _pay_link(db: Session, invoice: Invoice) -> str | None:
+    """Only for outgoing invoices, and only once APP_BASE_URL is set -
+    otherwise the link would be relative/broken, which is worse than
+    just not offering one. Local import to avoid a circular import at
+    module load time (invoice_service.create_invoice() imports agents
+    lazily for the same reason)."""
+    if invoice.direction != InvoiceDirection.outgoing or not APP_BASE_URL:
+        return None
+    from app.services.invoice_service import get_or_create_public_token
+    token = get_or_create_public_token(db, invoice)
+    return f"{APP_BASE_URL.rstrip('/')}/pay/{token}" if token else None
 
 
 def _situation_for(invoice: Invoice) -> tuple[str, str]:
@@ -90,6 +104,9 @@ def draft_reminder(db: Session, invoice: Invoice) -> Communication | None:
         return None
 
     purpose, instructions = _situation_for(invoice)
+    pay_link = _pay_link(db, invoice)
+    if pay_link:
+        instructions += f" Include this link so they can view and pay online: {pay_link}"
     prompt = (
         f"Write {purpose} for invoice #{invoice.invoice_number}, amount {invoice.total} {invoice.currency}, "
         f"due date {invoice.due_date}, addressed to {party.name}.\n\n{instructions}\n\n"
@@ -117,8 +134,9 @@ def draft_reminder(db: Session, invoice: Invoice) -> Communication | None:
             body=(
                 f"Dear {party.name},\n\n"
                 f"This is regarding invoice #{invoice.invoice_number} for {invoice.total} {invoice.currency}, "
-                f"due {invoice.due_date}.\n\n{instructions}\n\n"
-                "(This message was generated from a template because the AI drafting service was "
+                f"due {invoice.due_date}.\n\n{instructions}"
+                + (f"\n\nView and pay online: {pay_link}" if pay_link else "") +
+                "\n\n(This message was generated from a template because the AI drafting service was "
                 "unavailable - review and edit before sending.)\n\n"
                 "Sincerely,\nMaple Street Bakery Supply Co."
             ),
@@ -144,11 +162,14 @@ def draft_invoice_email(db: Session, invoice: Invoice) -> Communication | None:
         return None
 
     purpose = "sending a new invoice to a customer for the first time"
+    pay_link = _pay_link(db, invoice)
     instructions = (
         f"The invoice PDF is attached. State the amount due ({invoice.total} {invoice.currency}) and the "
         f"due date ({invoice.due_date}). This is not a reminder and nothing is overdue - the customer is "
         "seeing this invoice for the first time, so keep the tone professional and welcoming."
     )
+    if pay_link:
+        instructions += f" Include this link so they can view and pay it online: {pay_link}"
     prompt = (
         f"Write an email {purpose} for invoice #{invoice.invoice_number}, amount {invoice.total} "
         f"{invoice.currency}, due date {invoice.due_date}, addressed to {customer.name}.\n\n{instructions}\n\n"
@@ -169,8 +190,9 @@ def draft_invoice_email(db: Session, invoice: Invoice) -> Communication | None:
             body=(
                 f"Dear {customer.name},\n\n"
                 f"Please find attached invoice #{invoice.invoice_number} for {invoice.total} {invoice.currency}, "
-                f"due {invoice.due_date}.\n\n"
-                "(This message was generated from a template because the AI drafting service was "
+                f"due {invoice.due_date}."
+                + (f"\n\nView and pay online: {pay_link}" if pay_link else "") +
+                "\n\n(This message was generated from a template because the AI drafting service was "
                 "unavailable - review and edit before sending.)\n\n"
                 "Sincerely,\nMaple Street Bakery Supply Co."
             ),

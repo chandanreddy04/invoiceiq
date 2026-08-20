@@ -894,3 +894,14 @@ def web_download_invoice_pdf(invoice_id: int, db: Session = Depends(get_db), cur
         content=pdf_bytes, media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{invoice.invoice_number}.pdf"'},
     )
+
+
+@router.post("/invoices/{invoice_id}/generate-pay-link")
+def web_generate_pay_link(invoice_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    """Older outgoing invoices (created before public_token existed)
+    have none yet - create_invoice() generates one automatically for
+    every new one now, this is just the catch-up path for existing data."""
+    invoice = invoice_service.get_invoice(db, invoice_id)
+    if invoice is not None:
+        invoice_service.get_or_create_public_token(db, invoice)
+    return RedirectResponse(f"/web/invoices/{invoice_id}", status_code=303)

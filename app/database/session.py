@@ -41,6 +41,16 @@ def init_db() -> None:
 _MIGRATIONS = [
     ("invoices", "source_pdf_filename", "VARCHAR(255)"),
     ("customers", "created_at", "TIMESTAMP"),
+    ("invoices", "public_token", "VARCHAR(64)"),
+]
+
+# Separate from _MIGRATIONS above because a plain ADD COLUMN never
+# carries a model's unique=True/index=True along with it on an
+# already-existing table - only a fresh create_all() honors those.
+# "IF NOT EXISTS" (supported by both SQLite 3.3+ and Postgres 9.5+)
+# makes this idempotent by the SQL itself, no inspector check needed.
+_UNIQUE_INDEXES = [
+    ("ix_invoices_public_token", "invoices", "public_token"),
 ]
 
 
@@ -62,3 +72,7 @@ def _add_missing_columns() -> None:
         if column not in existing:
             with engine.begin() as conn:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
+
+    for index_name, table, column in _UNIQUE_INDEXES:
+        with engine.begin() as conn:
+            conn.execute(text(f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table} ({column})"))

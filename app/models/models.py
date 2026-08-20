@@ -122,6 +122,15 @@ class Invoice(Base):
     # directory ever moves.
     source_pdf_filename = Column(String(255), nullable=True)
 
+    # The unguessable identifier the public /pay/<token> page (and a
+    # Stripe Checkout redirect back to it) uses instead of the
+    # sequential `id` - a customer paying their own invoice must never
+    # be able to page through 1, 2, 3... and see (or pay!) someone
+    # else's. Only outgoing invoices get one (see
+    # invoice_service.get_or_create_public_token()) - there is no
+    # "customer view" of an invoice we owe a vendor.
+    public_token = Column(String(64), nullable=True, unique=True, index=True)
+
     created_at = Column(DateTime, default=utcnow_naive)
 
     organization = relationship("Organization", back_populates="invoices")
