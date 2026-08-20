@@ -17,6 +17,7 @@ already rely on (same as Section 38's original failure-handling design).
 
 import json
 import logging
+import time
 from typing import Iterator
 
 from app.core.config import GROQ_API_KEY, GROQ_MODEL, OLLAMA_MODEL
@@ -126,10 +127,35 @@ def _chat_groq(messages: list[dict], schema: dict | None, temperature: float) ->
         raise LLMUnavailableError(str(e)) from e
 
 
+_AVAILABILITY_CACHE_TTL_SECONDS = 300  # 5 minutes
+_availability_cache = {"result": None, "checked_at": 0.0}
+
+
 def is_available() -> bool:
-    """Used by /health. Cheap existence check, not a full round-trip
-    chat call for the Ollama case; Groq has no equivalent "is it up"
-    endpoint short of a real request, so it gets a minimal one."""
+    """Used by /health. Cached for _AVAILABILITY_CACHE_TTL_SECONDS - real
+    gap found live: Render polls /health roughly every 5 seconds as its
+    own ongoing platform health check, and Groq has no free "is it up"
+    endpoint short of a real chat request (see _check_availability_now
+    below), so an uncached check was burning a real request against
+    Groq's daily quota on every single probe - over 17,000 requests/day
+    from health polling ALONE, independent of any actual app usage,
+    which is what was actually exhausting the free-tier daily limit.
+    Caching keeps /health cheap while still reflecting a real Groq
+    outage within a few minutes, not instantly - an acceptable tradeoff
+    for a field that was already documented as "reported, not fatal"."""
+    now = time.monotonic()
+    if now - _availability_cache["checked_at"] < _AVAILABILITY_CACHE_TTL_SECONDS:
+        return _availability_cache["result"]
+
+    result = _check_availability_now()
+    _availability_cache["result"] = result
+    _availability_cache["checked_at"] = now
+    return result
+
+
+def _check_availability_now() -> bool:
+    """The real, uncached check - kept separate from is_available()'s
+    caching wrapper so each stays simple and independently testable."""
     if GROQ_API_KEY:
         try:
             _chat_groq([{"role": "user", "content": "ping"}], schema=None, temperature=0)
