@@ -72,6 +72,31 @@ def test_create_invoice_rejects_duplicate(db_session, org, vendor, mock_ollama_c
         invoice_service.create_invoice(db_session, org.id, make_payload(invoice_number="DUP-1", vendor_id=vendor.id))
 
 
+def test_create_invoice_rejects_duplicate_for_customer(db_session, org, customer, mock_ollama_chat):
+    """A real gap found while exploring customer invoicing: check_duplicate_invoice
+    was vendor-only, so an outgoing invoice reusing an existing invoice
+    number for the same customer slipped through with no check at all."""
+    payload = make_payload(invoice_number="OUT-DUP-1", customer_id=customer.id, direction="outgoing")
+    invoice_service.create_invoice(db_session, org.id, payload)
+    with pytest.raises(InvoiceValidationError, match="already exists for this customer"):
+        invoice_service.create_invoice(db_session, org.id, payload)
+
+
+def test_create_invoice_allows_same_number_for_different_customers(db_session, org, customer, mock_ollama_chat):
+    from app.models.models import Customer
+    other_customer = Customer(organization_id=org.id, name="Other Client", email="other@test.example")
+    db_session.add(other_customer)
+    db_session.commit()
+
+    invoice_service.create_invoice(
+        db_session, org.id, make_payload(invoice_number="SHARED-1", customer_id=customer.id, direction="outgoing")
+    )
+    # No error - invoice numbering is customer-specific, same as it already is for vendors.
+    invoice_service.create_invoice(
+        db_session, org.id, make_payload(invoice_number="SHARED-1", customer_id=other_customer.id, direction="outgoing")
+    )
+
+
 def test_update_invoice_preserves_category_across_unrelated_edit(db_session, org, vendor, mock_ollama_chat):
     """Regression test for the real Phase 5 bug: editing any field used
     to silently wipe every item's category because the update path
