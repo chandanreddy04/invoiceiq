@@ -461,7 +461,7 @@ async def web_edit_communication(
 
 @router.get("/payments", response_class=HTMLResponse)
 def web_payments(request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
-    result = payment_ap_agent.prioritize_payments(db, DEFAULT_ORG_ID)
+    result = orchestrator.run_payment_scan(db, DEFAULT_ORG_ID)
     return templates.TemplateResponse("payments.html", {"request": request, "result": result, "current_user": current_user})
 
 

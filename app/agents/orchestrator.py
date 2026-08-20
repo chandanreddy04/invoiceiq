@@ -23,7 +23,7 @@ import uuid
 from sqlalchemy.orm import Session
 
 from app.models.models import Invoice, AgentLog
-from app.agents import fraud_risk_agent, classification_agent, financial_analysis_agent, collections_agent
+from app.agents import fraud_risk_agent, classification_agent, financial_analysis_agent, collections_agent, payment_ap_agent
 
 logger = logging.getLogger(__name__)
 
@@ -98,9 +98,8 @@ def route_query(db: Session, org_id: int, question: str) -> dict:
 def run_collections_scan(db: Session, org_id: int) -> dict:
     """The third kind of task the Orchestrator handles: scanning every
     outstanding customer invoice and prioritizing which to chase -
-    triggered by visiting the Collections page. Unlike Payment/AP
-    (its incoming-side mirror), this run is logged to AgentLog, so it
-    shows up on the Agent Activity page like every other agent's work."""
+    triggered by visiting the Collections page. Logged to AgentLog like
+    run_payment_scan() below, so it shows up on Agent Activity."""
     task_id = str(uuid.uuid4())[:8]
     result = _log_step(
         db, task_id, None, "collections_agent",
@@ -109,3 +108,21 @@ def run_collections_scan(db: Session, org_id: int) -> dict:
         summarize=lambda r: f"{len(r['recommended'])} recommended, {len(r['escalate'])} to escalate",
     )
     return result or {"recommended": [], "escalate": [], "explanation": "The assistant is unavailable right now."}
+
+
+def run_payment_scan(db: Session, org_id: int) -> dict:
+    """The fourth kind of task the Orchestrator handles: scanning every
+    unpaid vendor invoice and prioritizing which to pay - triggered by
+    visiting the Payments page. Payment/AP's own docstring predates the
+    Orchestrator being wired to log page-triggered scans at all (only
+    the invoice pipeline and AI Assistant queries were logged, until
+    Collections/AR added the pattern for its own page) - this brings
+    Payment/AP's runs onto Agent Activity too, the same way."""
+    task_id = str(uuid.uuid4())[:8]
+    result = _log_step(
+        db, task_id, None, "payment_ap_agent",
+        lambda: payment_ap_agent.prioritize_payments(db, org_id),
+        input_summary=f"org #{org_id}: scan unpaid vendor invoices",
+        summarize=lambda r: f"{len(r['recommended'])} recommended, {len(r['held_for_review'])} held for review",
+    )
+    return result or {"recommended": [], "held_for_review": [], "explanation": "The assistant is unavailable right now."}

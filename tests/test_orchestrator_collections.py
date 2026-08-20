@@ -1,7 +1,8 @@
 """
 Tests that run_collections_scan() actually logs to AgentLog - the
 specific behavior requested (Collections/AR should show up on the
-Agent Activity page, unlike Payment/AP, which isn't logged at all).
+Agent Activity page). See tests/test_orchestrator_payment_scan.py for
+the equivalent test on Payment/AP's mirrored run_payment_scan().
 """
 
 from datetime import date, timedelta
