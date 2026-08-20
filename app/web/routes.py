@@ -17,7 +17,7 @@ import logging
 import uuid
 from decimal import Decimal, InvalidOperation
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, UploadFile, File, Form
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -31,7 +31,7 @@ from app.models.models import (
 )
 from app.schemas.invoice import InvoiceCreate, InvoiceItemCreate, InvoiceUpdate
 from app.schemas.party import VendorCreate, CustomerCreate
-from app.services import invoice_service, extraction_service, llm_extraction_service
+from app.services import invoice_service, extraction_service, llm_extraction_service, invoice_pdf_service
 from app.services.validation_service import InvoiceValidationError
 from app.agents import orchestrator, communication_agent, payment_ap_agent, collections_agent, fraud_risk_agent
 from app.tools import invoice_tools
@@ -435,6 +435,17 @@ def web_draft_reminder(invoice_id: int, db: Session = Depends(get_db), current_u
     return RedirectResponse(f"/web/invoices/{invoice_id}", status_code=303)
 
 
+@router.post("/invoices/{invoice_id}/draft-invoice-email")
+def web_draft_invoice_email(invoice_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    invoice = invoice_service.get_invoice(db, invoice_id)
+    if invoice is not None:
+        try:
+            communication_agent.draft_invoice_email(db, invoice)
+        except Exception:
+            logger.exception("Failed to draft invoice email for invoice %s", invoice_id)
+    return RedirectResponse(f"/web/invoices/{invoice_id}", status_code=303)
+
+
 @router.post("/invoices/{invoice_id}/communications/{comm_id}/edit")
 async def web_edit_communication(
     invoice_id: int, comm_id: int, request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login),
@@ -833,3 +844,25 @@ def web_view_source_pdf(invoice_id: int, db: Session = Depends(get_db), current_
                    "(a free-tier cloud redeploy wipes locally-saved files - the extracted invoice data is unaffected).",
         )
     return FileResponse(file_path, media_type="application/pdf", filename=f"{invoice.invoice_number}.pdf")
+
+
+@router.get("/invoices/{invoice_id}/pdf")
+def web_download_invoice_pdf(invoice_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    """The outgoing-side counterpart to source-pdf above: generates a
+    real PDF for an invoice WE issued to a customer (source-pdf is the
+    opposite direction - a PDF a vendor already sent US). Only makes
+    sense for outgoing invoices - an incoming one already has its own
+    original document (source-pdf) if one was uploaded, and generating
+    a fake "invoice we're sending" for money we owe a vendor would be
+    actively wrong, not just unavailable."""
+    invoice = invoice_service.get_invoice(db, invoice_id)
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="Invoice not found.")
+    if invoice.direction != InvoiceDirection.outgoing:
+        raise HTTPException(status_code=400, detail="PDF generation is only available for outgoing (customer) invoices.")
+
+    pdf_bytes = invoice_pdf_service.generate_invoice_pdf(invoice)
+    return Response(
+        content=pdf_bytes, media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{invoice.invoice_number}.pdf"'},
+    )

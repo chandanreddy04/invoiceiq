@@ -633,3 +633,81 @@ def test_json_api_is_not_gated_by_login(client):
         "items": [{"description": "X", "quantity": 1, "unit_price": 5}],
     })
     assert resp.status_code == 201  # succeeds with zero authentication
+
+
+def _seed_customer(client) -> int:
+    from app.models.models import Customer
+    db = client.session_factory()
+    try:
+        c = Customer(organization_id=1, name="PDF Test Customer", email="pdftest@test.example", address="1 Test St")
+        db.add(c)
+        db.commit()
+        db.refresh(c)
+        return c.id
+    finally:
+        db.close()
+
+
+def test_download_invoice_pdf_returns_real_pdf_for_outgoing_invoice(client):
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    customer_id = _seed_customer(client)
+    resp = client.post("/invoices", json={
+        "direction": "outgoing", "invoice_number": "PDF-ROUTE-1", "customer_id": customer_id,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "Consulting", "quantity": 1, "unit_price": 500}],
+    })
+    invoice_id = resp.json()["id"]
+
+    pdf_resp = client.get(f"/web/invoices/{invoice_id}/pdf")
+    assert pdf_resp.status_code == 200
+    assert pdf_resp.headers["content-type"] == "application/pdf"
+    assert pdf_resp.content[:5] == b"%PDF-"
+
+
+def test_download_invoice_pdf_rejects_incoming_invoice(client):
+    """A vendor invoice was never ours to "generate" - it already has
+    its own original document (source-pdf) if one was uploaded."""
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/invoices", json={
+        "direction": "incoming", "invoice_number": "PDF-ROUTE-2", "vendor_id": 1,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "X", "quantity": 1, "unit_price": 5}],
+    })
+    invoice_id = resp.json()["id"]
+
+    pdf_resp = client.get(f"/web/invoices/{invoice_id}/pdf")
+    assert pdf_resp.status_code == 400
+    assert "outgoing" in pdf_resp.json()["detail"].lower()
+
+
+def test_download_invoice_pdf_404s_for_missing_invoice(client):
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.get("/web/invoices/999999/pdf")
+    assert resp.status_code == 404
+
+
+def test_draft_invoice_email_route_creates_pending_approval(client):
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    customer_id = _seed_customer(client)
+    resp = client.post("/invoices", json={
+        "direction": "outgoing", "invoice_number": "EMAIL-ROUTE-1", "customer_id": customer_id,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "Consulting", "quantity": 1, "unit_price": 500}],
+    })
+    invoice_id = resp.json()["id"]
+
+    draft_resp = client.post(f"/web/invoices/{invoice_id}/draft-invoice-email", follow_redirects=False)
+    assert draft_resp.status_code == 303
+    assert draft_resp.headers["location"] == f"/web/invoices/{invoice_id}"
+
+    from app.models.models import Communication, ApprovalRequest
+    db = client.session_factory()
+    try:
+        comm = db.query(Communication).filter(Communication.invoice_id == invoice_id).first()
+        assert comm is not None
+        assert comm.status == "draft"
+        req = db.query(ApprovalRequest).filter(ApprovalRequest.related_id == comm.id, ApprovalRequest.type == "send_communication").first()
+        assert req is not None
+        assert req.status == "pending"
+    finally:
+        db.close()

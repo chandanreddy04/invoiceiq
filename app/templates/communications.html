@@ -13,6 +13,9 @@
     <span style="white-space: pre-wrap;">{{ c.body }}</span>
     <br>
     <a href="/web/invoices/{{ c.invoice_id }}">View invoice #{{ c.invoice_id }}</a>
+    {% if c.invoice.direction.value == "outgoing" %}
+    &middot; <a href="/web/invoices/{{ c.invoice_id }}/pdf" target="_blank" rel="noopener">📄 Download invoice PDF to attach</a>
+    {% endif %}
     {% if c.status == "sent" %}
     <span class="confidence"> Sent {{ c.sent_at.strftime("%Y-%m-%d %H:%M") }}</span>
     {% elif c.status == "draft" %}
