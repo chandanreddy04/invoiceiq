@@ -6,6 +6,7 @@ or updated" - no duplicated logic to drift out of sync between the
 two interfaces.
 """
 
+import re
 from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import or_
@@ -23,6 +24,37 @@ from app.tools.invoice_tools import check_duplicate_invoice
 
 def with_items(query):
     return query.options(joinedload(Invoice.items))
+
+
+_AUTO_NUMBER_PATTERN = re.compile(r"^INV-(\d+)$")
+
+
+def suggest_next_invoice_number(db: Session, org_id: int) -> str:
+    """Real gap found from a "could a local business actually run on
+    this" review: invoice_number was a required field with no
+    suggestion at all - every outgoing invoice needed a number typed
+    from scratch, unlike every real invoicing tool. Only meaningful for
+    outgoing invoices - an incoming one already has a real number the
+    vendor assigned it, which we have no business overriding or
+    guessing at.
+
+    Scans existing outgoing invoice numbers matching "INV-<digits>" for
+    this org and returns the next one, INV-0001 if none exist yet.
+    Deliberately just a suggestion, not enforced or auto-committed - a
+    business already using its own numbering scheme (the demo data
+    itself has "MSB-2201" style numbers) can freely type over it, same
+    as any pre-filled form field."""
+    numbers = (
+        db.query(Invoice.invoice_number)
+        .filter(Invoice.organization_id == org_id, Invoice.direction == InvoiceDirection.outgoing)
+        .all()
+    )
+    highest = 0
+    for (number,) in numbers:
+        match = _AUTO_NUMBER_PATTERN.match(number)
+        if match:
+            highest = max(highest, int(match.group(1)))
+    return f"INV-{highest + 1:04d}"
 
 
 def list_invoices(

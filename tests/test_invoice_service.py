@@ -165,3 +165,24 @@ def test_list_invoices_search_by_invoice_number_or_party_name(db_session, org, v
 
     by_party = invoice_service.list_invoices(db_session, org.id, q="test vendor")
     assert len(by_party) == 2  # both invoices are from the same `vendor` fixture
+
+
+def test_suggest_next_invoice_number_starts_at_0001_when_none_exist(db_session, org):
+    assert invoice_service.suggest_next_invoice_number(db_session, org.id) == "INV-0001"
+
+
+def test_suggest_next_invoice_number_increments_past_highest_existing(db_session, org, customer, mock_ollama_chat):
+    invoice_service.create_invoice(db_session, org.id, make_payload(invoice_number="INV-0001", customer_id=customer.id, direction="outgoing"))
+    invoice_service.create_invoice(db_session, org.id, make_payload(invoice_number="INV-0005", customer_id=customer.id, direction="outgoing"))
+
+    assert invoice_service.suggest_next_invoice_number(db_session, org.id) == "INV-0006"
+
+
+def test_suggest_next_invoice_number_ignores_non_matching_and_incoming_numbers(db_session, org, customer, vendor, mock_ollama_chat):
+    """A business already using its own scheme ("MSB-2201") shouldn't
+    confuse the suggester, and a vendor's own incoming invoice number
+    is never ours to count toward our own outgoing sequence."""
+    invoice_service.create_invoice(db_session, org.id, make_payload(invoice_number="MSB-2201", customer_id=customer.id, direction="outgoing"))
+    invoice_service.create_invoice(db_session, org.id, make_payload(invoice_number="INV-9999", vendor_id=vendor.id, direction="incoming"))
+
+    assert invoice_service.suggest_next_invoice_number(db_session, org.id) == "INV-0001"

@@ -37,7 +37,7 @@ function streamRiskExplanation(invoiceId) {
     <div class="row">
         <div>
             <label>Direction</label>
-            <select name="direction" {% if invoice %}disabled{% endif %}>
+            <select name="direction" id="direction-select" {% if invoice %}disabled{% endif %}>
                 <option value="incoming" {% if (invoice.direction.value if invoice else values.direction) == "incoming" %}selected{% endif %}>Incoming (vendor bills us)</option>
                 <option value="outgoing" {% if (invoice.direction.value if invoice else values.direction) == "outgoing" %}selected{% endif %}>Outgoing (we bill customer)</option>
             </select>
@@ -45,9 +45,26 @@ function streamRiskExplanation(invoiceId) {
         </div>
         <div>
             <label>Invoice number</label>
-            <input type="text" name="invoice_number" value="{{ invoice.invoice_number if invoice else values.invoice_number|default('') }}" required>
+            <input type="text" name="invoice_number" id="invoice-number-input" value="{{ invoice.invoice_number if invoice else values.invoice_number|default('') }}" required>
+            {% if not invoice %}<p class="confidence">Auto-suggested for outgoing invoices - edit freely if you use your own numbering.</p>{% endif %}
         </div>
     </div>
+    {% if not invoice %}
+    <script>
+        (function () {
+            const directionSelect = document.getElementById("direction-select");
+            const numberInput = document.getElementById("invoice-number-input");
+            const suggestedNumber = {{ suggested_invoice_number|tojson }};
+            function applySuggestionIfOutgoingAndEmpty() {
+                if (directionSelect.value === "outgoing" && numberInput.value.trim() === "") {
+                    numberInput.value = suggestedNumber;
+                }
+            }
+            directionSelect.addEventListener("change", applySuggestionIfOutgoingAndEmpty);
+            applySuggestionIfOutgoingAndEmpty();
+        })();
+    </script>
+    {% endif %}
 
     <div class="row">
         <div>

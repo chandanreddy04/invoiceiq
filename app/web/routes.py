@@ -263,7 +263,8 @@ def web_new_invoice_form(request: Request, db: Session = Depends(get_db), curren
     return templates.TemplateResponse(
         "invoice_form.html",
         {"request": request, "invoice": None, "vendors": vendors, "customers": customers, "values": {},
-         "form_action": "/web/invoices/new", "current_user": current_user},
+         "form_action": "/web/invoices/new", "current_user": current_user,
+         "suggested_invoice_number": invoice_service.suggest_next_invoice_number(db, DEFAULT_ORG_ID)},
     )
 
 
