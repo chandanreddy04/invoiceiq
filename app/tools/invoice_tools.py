@@ -131,21 +131,34 @@ def aggregate_invoices(
 
 
 def check_duplicate_invoice(
-    db: Session, org_id: int, vendor_id: int | None, invoice_number: str, exclude_invoice_id: int | None = None
+    db: Session, org_id: int, vendor_id: int | None, invoice_number: str,
+    customer_id: int | None = None, exclude_invoice_id: int | None = None,
 ) -> Invoice | None:
     """Section 15/18: the duplicate check that should have existed since
     Phase 1 validation but was only added in Phase 9 while building the
     synthetic dataset - a real gap in earlier coverage, not a deliberate
     later addition. Same vendor + same invoice number is treated as a
     duplicate; two different vendors are allowed to reuse a number since
-    invoice numbering is vendor-specific in the real world."""
-    if vendor_id is None:
+    invoice numbering is vendor-specific in the real world.
+
+    Originally vendor-only - a real gap found while exploring customer
+    invoicing: an outgoing invoice reusing an existing invoice number for
+    the same customer slipped through with no check at all. customer_id
+    added as an equivalent, same-shaped check for that side."""
+    if vendor_id is not None:
+        query = db.query(Invoice).filter(
+            Invoice.organization_id == org_id,
+            Invoice.vendor_id == vendor_id,
+            Invoice.invoice_number == invoice_number,
+        )
+    elif customer_id is not None:
+        query = db.query(Invoice).filter(
+            Invoice.organization_id == org_id,
+            Invoice.customer_id == customer_id,
+            Invoice.invoice_number == invoice_number,
+        )
+    else:
         return None
-    query = db.query(Invoice).filter(
-        Invoice.organization_id == org_id,
-        Invoice.vendor_id == vendor_id,
-        Invoice.invoice_number == invoice_number,
-    )
     if exclude_invoice_id is not None:
         query = query.filter(Invoice.id != exclude_invoice_id)
     return query.first()

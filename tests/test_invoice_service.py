@@ -52,14 +52,18 @@ def test_create_invoice_triggers_orchestrator_pipeline(db_session, org, vendor, 
     assert flag is not None
 
 
-def test_create_invoice_skips_fraud_check_for_outgoing(db_session, org, customer, mock_ollama_chat):
+def test_create_invoice_runs_fraud_check_for_outgoing(db_session, org, customer, mock_ollama_chat):
+    """Fraud/Risk Agent generalization: outgoing/customer invoices used to
+    get no risk assessment at all (a real gap found while exploring
+    customer invoicing). It now runs for every invoice regardless of
+    direction - see app/agents/fraud_risk_agent.py's module docstring."""
     payload = make_payload(invoice_number="OUT-1", customer_id=customer.id, direction="outgoing")
     invoice = invoice_service.create_invoice(db_session, org.id, payload)
 
     logs = db_session.query(AgentLog).filter(AgentLog.invoice_id == invoice.id).all()
     agent_names = {log.agent_name for log in logs}
-    assert "fraud_risk_agent" not in agent_names  # only incoming/vendor invoices get fraud-checked
-    assert invoice.risk_score is None
+    assert "fraud_risk_agent" in agent_names
+    assert invoice.risk_score is not None
 
 
 def test_create_invoice_rejects_duplicate(db_session, org, vendor, mock_ollama_chat):

@@ -58,10 +58,11 @@ def create_invoice(db: Session, org_id: int, payload: InvoiceCreate) -> Invoice:
     """Raises InvoiceValidationError (from validation_service) on bad input."""
     validate_invoice_input(payload.items, payload.due_date, payload.invoice_date)
 
-    dup = check_duplicate_invoice(db, org_id, payload.vendor_id, payload.invoice_number)
+    dup = check_duplicate_invoice(db, org_id, payload.vendor_id, payload.invoice_number, customer_id=payload.customer_id)
     if dup is not None:
+        party_label = "vendor" if payload.vendor_id is not None else "customer"
         raise InvoiceValidationError(
-            f"Invoice number '{payload.invoice_number}' already exists for this vendor (invoice #{dup.id})."
+            f"Invoice number '{payload.invoice_number}' already exists for this {party_label} (invoice #{dup.id})."
         )
 
     subtotal, total, line_totals = calculate_invoice_totals(payload.items, payload.tax, payload.discount)

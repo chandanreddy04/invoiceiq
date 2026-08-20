@@ -2,14 +2,27 @@
 The Fraud/Risk Agent - the clearest example in this project of why
 "LLM is one component, not the whole agent" (Section 1/5/36).
 
+Originally vendor-only ("only incoming invoices are assessed" was a
+hardcoded gate). A real gap found while exploring customer invoicing:
+outgoing/customer invoices got NO risk assessment at all, even though
+the same underlying pattern is a legitimate real-world concern on that
+side too - a brand-new customer suddenly being extended a large amount
+of credit (an unpaid outgoing invoice IS credit extended) is exactly as
+worth flagging as a brand-new vendor billing an unusually large amount,
+just for a different underlying reason (collectability risk, not
+"someone is defrauding me"). Vendor and Customer are structurally
+identical for this purpose (name, email, address, created_at), so this
+whole module now reasons over whichever "party" an invoice actually has,
+instead of duplicating vendor-only logic into a parallel customer copy.
+
 Walking through the layers from the Section 5 design:
 
-  INPUT LAYER       -> an Invoice that was just created
-  CONTEXT/MEMORY     -> this vendor's prior invoices, pulled from the database - and, since
-                        this was a real gap in every earlier signal here, other VENDOR
-                        RECORDS in the same organization too, to catch a fraud/data-integrity
-                        pattern no single-vendor history check can see on its own: two
-                        "different" vendors secretly sharing an email or address
+  INPUT LAYER       -> an Invoice that was just created (either direction)
+  CONTEXT/MEMORY     -> this party's (vendor or customer) prior invoices, pulled from the
+                        database - and other PARTY RECORDS of the same kind in the same
+                        organization too, to catch a pattern no single-party history check
+                        can see on its own: two "different" parties secretly sharing an
+                        email or address
   REASONING LAYER    -> compute_risk_signals() + score_risk(): PLAIN PYTHON.
                         Ratios, date math, string similarity - no LLM call
                         anywhere in here. This is the part that actually
@@ -38,7 +51,7 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from app.models.models import Invoice, Vendor, FraudFlag, InvoiceStatus, ApprovalRequest
+from app.models.models import Invoice, Vendor, Customer, FraudFlag, InvoiceStatus, ApprovalRequest
 from app.utils.time import utcnow_naive
 from app.services.llm_client import LLMUnavailableError, chat
 
@@ -47,62 +60,77 @@ logger = logging.getLogger(__name__)
 HIGH_RISK_THRESHOLD = 0.7
 
 
-def get_vendor_history(db: Session, vendor_id: int, exclude_invoice_id: int | None = None) -> list[Invoice]:
-    """Tool: every other invoice this project has ever received from this vendor."""
-    query = db.query(Invoice).filter(Invoice.vendor_id == vendor_id)
+def get_party(invoice: Invoice) -> Vendor | Customer | None:
+    """The one thing that actually differs between an incoming and an
+    outgoing invoice: which relationship to follow. Everything else in
+    this module works identically either way once it has this."""
+    return invoice.vendor if invoice.vendor_id is not None else invoice.customer
+
+
+def get_party_history(db: Session, invoice: Invoice, exclude_invoice_id: int | None = None) -> list[Invoice]:
+    """Tool: every other invoice this project has to/from the same party
+    (whichever kind this invoice actually has)."""
+    if invoice.vendor_id is not None:
+        query = db.query(Invoice).filter(Invoice.vendor_id == invoice.vendor_id)
+    else:
+        query = db.query(Invoice).filter(Invoice.customer_id == invoice.customer_id)
     if exclude_invoice_id is not None:
         query = query.filter(Invoice.id != exclude_invoice_id)
     return query.all()
 
 
-def find_vendors_sharing_contact_info(db: Session, org_id: int, vendor: Vendor) -> list[Vendor]:
-    """Tool: other vendor records in this organization that share this
-    vendor's email or mailing address. A real gap in every signal above -
-    each one only ever looks at a single vendor's own history in
-    isolation, so two "different" vendor records secretly sharing
-    contact details (a classic vendor-impersonation technique for
-    quietly rerouting payments - and just as often an innocent
-    duplicate-entry mistake) was invisible to this agent entirely until
-    now. Comparison is case/whitespace-normalized; blank fields on
-    either side never count as a match, so two vendors both missing an
-    address don't falsely "share" one."""
-    others = db.query(Vendor).filter(Vendor.organization_id == org_id, Vendor.id != vendor.id).all()
-    v_email = (vendor.email or "").strip().lower()
-    v_address = (vendor.address or "").strip().lower()
+def find_parties_sharing_contact_info(db: Session, org_id: int, party: Vendor | Customer) -> list[Vendor | Customer]:
+    """Tool: other records of the SAME kind (vendor-with-vendor,
+    customer-with-customer - a vendor never gets compared against a
+    customer) in this organization that share this party's email or
+    mailing address. A real gap in every signal here - each one only
+    ever looks at a single party's own history in isolation, so two
+    "different" records secretly sharing contact details (a classic
+    impersonation technique for quietly rerouting payments, and just as
+    often an innocent duplicate-entry mistake) was invisible until now.
+    Comparison is case/whitespace-normalized; blank fields on either
+    side never count as a match, so two records both missing an address
+    don't falsely "share" one."""
+    model = type(party)
+    others = db.query(model).filter(model.organization_id == org_id, model.id != party.id).all()
+    p_email = (party.email or "").strip().lower()
+    p_address = (party.address or "").strip().lower()
     return [
         other for other in others
-        if (v_email and v_email == (other.email or "").strip().lower())
-        or (v_address and v_address == (other.address or "").strip().lower())
+        if (p_email and p_email == (other.email or "").strip().lower())
+        or (p_address and p_address == (other.address or "").strip().lower())
     ]
 
 
-def compute_risk_signals(db: Session, invoice: Invoice, vendor: Vendor) -> dict:
+def compute_risk_signals(db: Session, invoice: Invoice, party: Vendor | Customer) -> dict:
     """Gathers the raw numbers score_risk() will reason over. No verdict yet."""
-    history = get_vendor_history(db, vendor.id, exclude_invoice_id=invoice.id)
+    history = get_party_history(db, invoice, exclude_invoice_id=invoice.id)
+    party_label = "vendor" if invoice.vendor_id is not None else "customer"
 
     signals = {
-        "is_new_vendor": False,
-        "vendor_age_days": None,
+        "party_label": party_label,
+        "is_new_party": False,
+        "party_age_days": None,
         "amount_ratio": None,
-        "amount_ratio_basis": None,  # "vendor" | "org" - what the ratio was computed against
+        "amount_ratio_basis": None,  # "party" | "org" - what the ratio was computed against
         "max_invoice_number_similarity": 0.0,
         "similar_invoice_number": None,
-        "shared_contact_vendors": [],  # names of other vendors sharing this one's email/address
+        "shared_contact_parties": [],  # names of other same-kind parties sharing this one's email/address
     }
 
-    signals["shared_contact_vendors"] = [
-        v.name for v in find_vendors_sharing_contact_info(db, invoice.organization_id, vendor)
+    signals["shared_contact_parties"] = [
+        p.name for p in find_parties_sharing_contact_info(db, invoice.organization_id, party)
     ]
 
-    if vendor.created_at:
-        signals["vendor_age_days"] = (utcnow_naive() - vendor.created_at).days
-        signals["is_new_vendor"] = signals["vendor_age_days"] < 7
+    if party.created_at:
+        signals["party_age_days"] = (utcnow_naive() - party.created_at).days
+        signals["is_new_party"] = signals["party_age_days"] < 7
 
     if history:
         avg_total = sum(Decimal(h.total) for h in history) / len(history)
         if avg_total > 0:
             signals["amount_ratio"] = float(Decimal(invoice.total) / avg_total)
-            signals["amount_ratio_basis"] = "vendor"
+            signals["amount_ratio_basis"] = "party"
 
         for h in history:
             similarity = difflib.SequenceMatcher(None, invoice.invoice_number, h.invoice_number).ratio()
@@ -110,21 +138,28 @@ def compute_risk_signals(db: Session, invoice: Invoice, vendor: Vendor) -> dict:
                 signals["max_invoice_number_similarity"] = similarity
                 signals["similar_invoice_number"] = h.invoice_number
     else:
-        # A brand-new vendor has no history of its own to compare against -
+        # A brand-new party has no history of its own to compare against -
         # without this fallback, a first invoice of any size scores the same
-        # as a first invoice for $10, which misses exactly the "new vendor +
+        # as a first invoice for $10, which misses exactly the "new party +
         # suspiciously large invoice" pattern this agent exists to catch.
-        # Compare against this organization's overall average invoice
-        # instead, as the next-best baseline for "is this unusually large."
+        # Compare against this organization's overall average invoice OF
+        # THE SAME DIRECTION instead, as the next-best baseline - incoming
+        # and outgoing invoices are typically very different sizes (what
+        # you pay for supplies vs. what you bill for finished goods), so
+        # mixing them would make for a misleading baseline either way.
         # Excludes invoices already flagged as risky - including them would
         # let a known-suspicious invoice quietly inflate the "normal"
         # baseline and dilute the very signal meant to catch the next one.
+        same_direction_filter = (
+            Invoice.vendor_id.isnot(None) if invoice.vendor_id is not None else Invoice.customer_id.isnot(None)
+        )
         org_invoices = (
             db.query(Invoice)
             .filter(
                 Invoice.organization_id == invoice.organization_id,
                 Invoice.id != invoice.id,
-                Invoice.vendor_id.isnot(None),
+                Invoice.direction == invoice.direction,
+                same_direction_filter,
                 (Invoice.risk_score.is_(None)) | (Invoice.risk_score < 0.5),
             )
             .all()
@@ -144,9 +179,10 @@ def score_risk(signals: dict) -> tuple[float, list[str]]:
     score can be traced back to a specific, readable reason."""
     risk = 0.0
     reasons = []
+    party_label = signals.get("party_label", "vendor")
 
     ratio = signals["amount_ratio"]
-    basis = "this vendor's average invoice" if signals["amount_ratio_basis"] == "vendor" else "this business's typical invoice size"
+    basis = f"this {party_label}'s average invoice" if signals["amount_ratio_basis"] == "party" else "this business's typical invoice size"
     if ratio is not None:
         if ratio >= 3:
             risk += 0.45
@@ -155,9 +191,9 @@ def score_risk(signals: dict) -> tuple[float, list[str]]:
             risk += 0.15
             reasons.append(f"Amount is {ratio:.1f}x {basis} (moderately high).")
 
-    if signals["is_new_vendor"]:
+    if signals["is_new_party"]:
         risk += 0.30
-        reasons.append(f"Vendor was added only {signals['vendor_age_days']} day(s) ago.")
+        reasons.append(f"{party_label.capitalize()} was added only {signals['party_age_days']} day(s) ago.")
 
     if signals["max_invoice_number_similarity"] >= 0.85:
         risk += 0.30
@@ -166,16 +202,16 @@ def score_risk(signals: dict) -> tuple[float, list[str]]:
             f"('{signals['similar_invoice_number']}', {signals['max_invoice_number_similarity']:.0%} similar)."
         )
 
-    if signals["shared_contact_vendors"]:
+    if signals["shared_contact_parties"]:
         risk += 0.35
-        names = ", ".join(signals["shared_contact_vendors"])
+        names = ", ".join(signals["shared_contact_parties"])
         reasons.append(
-            f"This vendor shares an email or address with another vendor on file ({names}) - "
-            "could be a duplicate entry, or a look-alike vendor set up to redirect payments."
+            f"This {party_label} shares an email or address with another {party_label} on file ({names}) - "
+            f"could be a duplicate entry, or a look-alike {party_label} set up to redirect payments."
         )
 
     if not reasons:
-        reasons.append("No anomalies detected against this vendor's history.")
+        reasons.append(f"No anomalies detected against this {party_label}'s history.")
 
     return min(risk, 1.0), reasons
 
@@ -214,12 +250,16 @@ def explain_risk_with_llm_stream(risk_score: float, reasons: list[str]):
 
 
 def run_fraud_check(db: Session, invoice: Invoice) -> FraudFlag | None:
-    """The agent's entry point: input -> reasoning -> LLM -> action -> feedback."""
-    if invoice.vendor_id is None:
-        return None  # only incoming (vendor) invoices are assessed for now
+    """The agent's entry point: input -> reasoning -> LLM -> action -> feedback.
+    Assesses both directions now - an invoice always has a vendor or a
+    customer, so the only real "nothing to assess" case is neither
+    being set at all (shouldn't happen in practice, but not this
+    agent's job to enforce that - just to not crash on it)."""
+    party = get_party(invoice)
+    if party is None:
+        return None
 
-    vendor = db.get(Vendor, invoice.vendor_id)
-    signals = compute_risk_signals(db, invoice, vendor)
+    signals = compute_risk_signals(db, invoice, party)
     risk_score, reasons = score_risk(signals)
 
     try:

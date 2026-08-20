@@ -55,12 +55,16 @@ def run_invoice_pipeline(db: Session, invoice: Invoice) -> str:
     task_id so callers can look up the full trace in AgentLog."""
     task_id = str(uuid.uuid4())[:8]
 
-    if invoice.vendor_id is not None:
-        _log_step(
-            db, task_id, invoice.id, "fraud_risk_agent",
-            lambda: fraud_risk_agent.run_fraud_check(db, invoice) and "flagged",
-            input_summary=f"invoice #{invoice.invoice_number}, total={invoice.total}",
-        )
+    # A real gap found while exploring customer invoicing: this used to
+    # gate on invoice.vendor_id, so outgoing/customer invoices got no
+    # risk assessment at all. fraud_risk_agent now reasons over
+    # whichever party an invoice actually has (see get_party()), so
+    # nothing needs to be decided here anymore - just always run it.
+    _log_step(
+        db, task_id, invoice.id, "fraud_risk_agent",
+        lambda: fraud_risk_agent.run_fraud_check(db, invoice) and "flagged",
+        input_summary=f"invoice #{invoice.invoice_number}, total={invoice.total}",
+    )
 
     _log_step(
         db, task_id, invoice.id, "classification_agent",

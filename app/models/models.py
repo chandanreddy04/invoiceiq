@@ -63,6 +63,11 @@ class Customer(Base):
     name = Column(String(255), nullable=False)
     email = Column(String(255))
     address = Column(String(500))
+    # Real gap found while exploring customer invoicing: Vendor has had
+    # this since Phase 1 (it powers the "new vendor" risk signal) -
+    # Customer never got the same column, which made an equivalent
+    # signal for outgoing/customer invoices structurally impossible.
+    created_at = Column(DateTime, default=utcnow_naive)
 
     organization = relationship("Organization", back_populates="customers")
     invoices = relationship("Invoice", back_populates="customer")

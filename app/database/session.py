@@ -38,6 +38,12 @@ def init_db() -> None:
     _add_missing_columns()
 
 
+_MIGRATIONS = [
+    ("invoices", "source_pdf_filename", "VARCHAR(255)"),
+    ("customers", "created_at", "TIMESTAMP"),
+]
+
+
 def _add_missing_columns() -> None:
     """create_all() only creates tables that don't exist yet - it never
     alters a table that's already there, so a new column added to a
@@ -51,7 +57,8 @@ def _add_missing_columns() -> None:
     from sqlalchemy import inspect, text
 
     inspector = inspect(engine)
-    existing = {col["name"] for col in inspector.get_columns("invoices")}
-    if "source_pdf_filename" not in existing:
-        with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE invoices ADD COLUMN source_pdf_filename VARCHAR(255)"))
+    for table, column, sql_type in _MIGRATIONS:
+        existing = {col["name"] for col in inspector.get_columns(table)}
+        if column not in existing:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
