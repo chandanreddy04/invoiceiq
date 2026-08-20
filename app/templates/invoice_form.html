@@ -175,7 +175,7 @@ function streamRiskExplanation(invoiceId) {
 {% for c in comms %}
 <details style="border:1px solid #ddd; border-radius:6px; padding:0.5rem 0.75rem; margin-bottom:0.5rem;" {% if c.status == "draft" %}open{% endif %}>
     <summary style="cursor:pointer;">
-        <span class="badge {{ 'paid' if c.status == 'sent' else ('overdue' if c.status == 'rejected' else 'unpaid') }}">{{ c.status }}</span>
+        <span class="badge {{ 'paid' if c.status == 'sent' else ('overdue' if c.status in ('rejected', 'send_failed') else 'unpaid') }}">{{ c.status }}</span>
         <strong>{{ c.subject }}</strong> — to {{ c.recipient }}
         <span class="confidence">{{ c.created_at.strftime("%Y-%m-%d %H:%M") }}</span>
     </summary>

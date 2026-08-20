@@ -6,9 +6,9 @@
 
 {% if comms %}
 {% for c in comms %}
-<div class="flash {{ 'success' if c.status == 'sent' else '' }}" style="{% if c.status == 'draft' %}background:#fff3cd;color:#856404;{% elif c.status == 'rejected' %}background:#f8d7da;color:#721c24;{% endif %} margin-bottom:1rem;">
+<div class="flash {{ 'success' if c.status == 'sent' else '' }}" style="{% if c.status == 'draft' %}background:#fff3cd;color:#856404;{% elif c.status in ('rejected', 'send_failed') %}background:#f8d7da;color:#721c24;{% endif %} margin-bottom:1rem;">
     <strong>{{ c.subject }}</strong> — to {{ c.recipient }}
-    <span class="badge {{ 'paid' if c.status == 'sent' else ('overdue' if c.status == 'rejected' else 'unpaid') }}">{{ c.status }}</span>
+    <span class="badge {{ 'paid' if c.status == 'sent' else ('overdue' if c.status in ('rejected', 'send_failed') else 'unpaid') }}">{{ c.status }}</span>
     <br>
     <span style="white-space: pre-wrap;">{{ c.body }}</span>
     <br>
@@ -20,6 +20,8 @@
     <span class="confidence"> Sent {{ c.sent_at.strftime("%Y-%m-%d %H:%M") }}</span>
     {% elif c.status == "draft" %}
     <span class="confidence"> Awaiting approval</span>
+    {% elif c.status == "send_failed" %}
+    <span class="confidence"> The real send failed (bad SMTP credentials, unreachable host, or a rejected recipient) - check server logs, or send this one manually using the PDF link above.</span>
     {% endif %}
 </div>
 {% endfor %}

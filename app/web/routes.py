@@ -31,7 +31,7 @@ from app.models.models import (
 )
 from app.schemas.invoice import InvoiceCreate, InvoiceItemCreate, InvoiceUpdate
 from app.schemas.party import VendorCreate, CustomerCreate
-from app.services import invoice_service, extraction_service, llm_extraction_service, invoice_pdf_service
+from app.services import invoice_service, extraction_service, llm_extraction_service, invoice_pdf_service, email_service
 from app.services.validation_service import InvoiceValidationError
 from app.agents import orchestrator, communication_agent, payment_ap_agent, collections_agent, fraud_risk_agent
 from app.tools import invoice_tools
@@ -536,6 +536,35 @@ def web_approvals(request: Request, db: Session = Depends(get_db), current_user:
     )
 
 
+def _send_or_simulate(db: Session, comm: Communication) -> None:
+    """The approval-time send step. Same simulated behavior as before
+    (unchanged) when SMTP isn't configured. When it is, actually sends
+    over SMTP - attaching the real generated invoice PDF (see
+    invoice_pdf_service.py) for an outgoing invoice's email, since
+    that's the whole point of sending this one for real. A real send
+    failure marks the draft "send_failed" rather than pretending it
+    went out - the human still sees it and can retry or send manually."""
+    if not email_service.is_configured():
+        comm.status = "sent"
+        comm.sent_at = utcnow_naive()
+        logger.info("SIMULATED SEND to %s: %s", comm.recipient, comm.subject)
+        return
+
+    attachment = None
+    invoice = invoice_service.get_invoice(db, comm.invoice_id)
+    if invoice is not None and invoice.direction == InvoiceDirection.outgoing:
+        attachment = (f"{invoice.invoice_number}.pdf", invoice_pdf_service.generate_invoice_pdf(invoice))
+
+    try:
+        email_service.send_email(comm.recipient, comm.subject, comm.body, attachment=attachment)
+        comm.status = "sent"
+        comm.sent_at = utcnow_naive()
+        logger.info("REAL SEND to %s: %s", comm.recipient, comm.subject)
+    except email_service.EmailSendError:
+        comm.status = "send_failed"
+        logger.exception("Real email send failed for communication %s", comm.id)
+
+
 def _decide_approval(db: Session, request_id: int, approve: bool, performed_by: str) -> None:
     req = db.get(ApprovalRequest, request_id)
     if req is None or req.status != "pending":
@@ -549,9 +578,7 @@ def _decide_approval(db: Session, request_id: int, approve: bool, performed_by: 
         comm = db.get(Communication, req.related_id)
         if comm is not None and comm.status == "draft":
             if approve:
-                comm.status = "sent"
-                comm.sent_at = utcnow_naive()
-                logger.info("SIMULATED SEND to %s: %s", comm.recipient, comm.subject)
+                _send_or_simulate(db, comm)
             else:
                 comm.status = "rejected"
 

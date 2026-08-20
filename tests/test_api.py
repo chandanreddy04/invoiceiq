@@ -711,3 +711,126 @@ def test_draft_invoice_email_route_creates_pending_approval(client):
         assert req.status == "pending"
     finally:
         db.close()
+
+
+def _get_pending_send_approval_id(client, comm_id):
+    from app.models.models import ApprovalRequest
+    db = client.session_factory()
+    try:
+        return db.query(ApprovalRequest).filter(
+            ApprovalRequest.type == "send_communication", ApprovalRequest.related_id == comm_id, ApprovalRequest.status == "pending"
+        ).first().id
+    finally:
+        db.close()
+
+
+def test_approving_communication_stays_simulated_when_smtp_not_configured(client, mock_ollama_chat, monkeypatch):
+    """Default behavior (no SMTP_* env vars) must stay exactly as it
+    always was - approving a draft marks it "sent" without any real
+    network call."""
+    from app.services import email_service
+    monkeypatch.setattr(email_service, "SMTP_HOST", "")
+
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/invoices", json={
+        "direction": "incoming", "invoice_number": "SMTP-OFF-1", "vendor_id": 1,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "X", "quantity": 1, "unit_price": 5}],
+    })
+    invoice_id = resp.json()["id"]
+    client.post(f"/web/invoices/{invoice_id}/draft-reminder")
+
+    from app.models.models import Communication
+    db = client.session_factory()
+    comm_id = db.query(Communication).filter(Communication.invoice_id == invoice_id).first().id
+    db.close()
+
+    client.post(f"/web/approvals/{_get_pending_send_approval_id(client, comm_id)}/approve")
+
+    db = client.session_factory()
+    try:
+        comm = db.query(Communication).filter(Communication.id == comm_id).first()
+        assert comm.status == "sent"
+    finally:
+        db.close()
+
+
+def test_approving_outgoing_invoice_communication_sends_real_email_with_pdf_when_smtp_configured(client, mock_ollama_chat, monkeypatch):
+    from app.services import email_service
+    monkeypatch.setattr(email_service, "SMTP_HOST", "smtp.example.com")
+    monkeypatch.setattr(email_service, "SMTP_USER", "biz@example.com")
+    monkeypatch.setattr(email_service, "SMTP_PASSWORD", "app-password")
+
+    sent_calls = []
+
+    def fake_send_email(to, subject, body, attachment=None):
+        sent_calls.append({"to": to, "subject": subject, "attachment": attachment})
+
+    from app.web import routes
+    monkeypatch.setattr(routes.email_service, "send_email", fake_send_email)
+
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    customer_id = _seed_customer(client)
+    resp = client.post("/invoices", json={
+        "direction": "outgoing", "invoice_number": "SMTP-ON-1", "customer_id": customer_id,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "Consulting", "quantity": 1, "unit_price": 500}],
+    })
+    invoice_id = resp.json()["id"]
+    client.post(f"/web/invoices/{invoice_id}/draft-invoice-email")
+
+    from app.models.models import Communication
+    db = client.session_factory()
+    comm_id = db.query(Communication).filter(Communication.invoice_id == invoice_id).first().id
+    db.close()
+
+    client.post(f"/web/approvals/{_get_pending_send_approval_id(client, comm_id)}/approve")
+
+    assert len(sent_calls) == 1
+    assert sent_calls[0]["to"] == "pdftest@test.example"
+    filename, pdf_bytes = sent_calls[0]["attachment"]
+    assert filename == "SMTP-ON-1.pdf"
+    assert pdf_bytes[:5] == b"%PDF-"
+
+    db = client.session_factory()
+    try:
+        comm = db.query(Communication).filter(Communication.id == comm_id).first()
+        assert comm.status == "sent"
+    finally:
+        db.close()
+
+
+def test_approving_communication_marks_send_failed_on_real_smtp_error(client, mock_ollama_chat, monkeypatch):
+    from app.services import email_service
+    monkeypatch.setattr(email_service, "SMTP_HOST", "smtp.example.com")
+    monkeypatch.setattr(email_service, "SMTP_USER", "biz@example.com")
+    monkeypatch.setattr(email_service, "SMTP_PASSWORD", "wrong-password")
+
+    def failing_send_email(*a, **kw):
+        raise email_service.EmailSendError("535 Authentication failed")
+
+    from app.web import routes
+    monkeypatch.setattr(routes.email_service, "send_email", failing_send_email)
+
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/invoices", json={
+        "direction": "incoming", "invoice_number": "SMTP-FAIL-1", "vendor_id": 1,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "X", "quantity": 1, "unit_price": 5}],
+    })
+    invoice_id = resp.json()["id"]
+    client.post(f"/web/invoices/{invoice_id}/draft-reminder")
+
+    from app.models.models import Communication
+    db = client.session_factory()
+    comm_id = db.query(Communication).filter(Communication.invoice_id == invoice_id).first().id
+    db.close()
+
+    client.post(f"/web/approvals/{_get_pending_send_approval_id(client, comm_id)}/approve")
+
+    db = client.session_factory()
+    try:
+        comm = db.query(Communication).filter(Communication.id == comm_id).first()
+        assert comm.status == "send_failed"
+    finally:
+        db.close()

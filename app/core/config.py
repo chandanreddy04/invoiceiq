@@ -60,6 +60,28 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-only-insecure-default-change-in-env")
 
+# Communication.status was "draft | sent" with "sent" always simulated -
+# see that model's own docstring for why (demonstrating the human-in-
+# the-loop approval gate, not real delivery). Setting SMTP_HOST switches
+# app/services/email_service.py from the simulated log-only send to a
+# real SMTP send, the same config-gated pattern GROQ_API_KEY above uses
+# for the LLM backend: unset by default, so nothing about existing
+# behavior changes until these are deliberately provided (e.g. a Gmail
+# App Password, or any real SMTP provider's credentials) via the
+# platform's own env var settings - never pasted into this codebase.
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", SMTP_USER)
+
+# Same config-gated pattern again: unset by default (payment links stay
+# "not configured" in the UI), a real Stripe secret key switches
+# app/services/payment_service.py to actually creating live Checkout
+# Sessions. Get one at https://dashboard.stripe.com/apikeys - test mode
+# keys (sk_test_...) work identically to live ones for this integration.
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "./data/invoices"))
 MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "10"))
 MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
