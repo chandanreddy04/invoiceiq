@@ -63,6 +63,54 @@ def _parse_items_from_form(form) -> list[InvoiceItemCreate]:
     return items
 
 
+def _match_vendor(vendors: list, extracted_name: str | None, extracted_tax_id: str | None) -> int | None:
+    """Tax ID is checked first and wins outright when it matches - two
+    real businesses never share a real tax ID, but they can easily
+    share a near-identical name (a franchise, a rebrand, a typo in the
+    extraction). Falls back to a case/whitespace-insensitive name
+    match only when no tax ID match was found."""
+    tax_id = (extracted_tax_id or "").strip().lower()
+    if tax_id:
+        for v in vendors:
+            if v.tax_id and v.tax_id.strip().lower() == tax_id:
+                return v.id
+
+    name = (extracted_name or "").strip().lower()
+    if name:
+        for v in vendors:
+            if v.name.strip().lower() == name:
+                return v.id
+
+    return None
+
+
+def _resolve_or_create_vendor(db: Session, org_id: int, form) -> int:
+    """An explicit vendor_id from the review page's dropdown always
+    wins - a human deciding "use this existing vendor" beats a guess.
+    Otherwise, if extraction found a vendor name that didn't match
+    anyone on file, create that vendor now (with whatever address/tax
+    ID were also extracted) - the same record a human would end up
+    with by going to the Vendors page and adding it themselves first,
+    just without the extra trip."""
+    vendor_id = form.get("vendor_id")
+    if vendor_id:
+        return int(vendor_id)
+
+    extracted_name = (form.get("extracted_vendor_name") or "").strip()
+    if not extracted_name:
+        raise InvoiceValidationError("No vendor selected, and no vendor name was extracted to create one from.")
+
+    new_vendor = Vendor(
+        organization_id=org_id, name=extracted_name,
+        address=(form.get("extracted_vendor_address") or "").strip() or None,
+        tax_id=(form.get("extracted_vendor_tax_id") or "").strip() or None,
+    )
+    db.add(new_vendor)
+    db.commit()
+    db.refresh(new_vendor)
+    return new_vendor.id
+
+
 def _audit(db: Session, entity_type: str, entity_id: int, action: str, performed_by: str, details: dict | None = None):
     db.add(AuditLog(
         entity_type=entity_type, entity_id=entity_id, action=action,
@@ -738,6 +786,7 @@ async def web_create_vendor(request: Request, db: Session = Depends(get_db), cur
     form = await request.form()
     vendor = Vendor(organization_id=DEFAULT_ORG_ID, **VendorCreate(
         name=form.get("name", ""), email=form.get("email") or None, address=form.get("address") or None,
+        tax_id=form.get("tax_id") or None,
     ).model_dump())
     db.add(vendor)
     db.commit()
@@ -841,6 +890,9 @@ async def web_upload_extract(
         llm_result = llm_extraction_service.extract_invoice_with_llm(raw_text)
         extracted = {
             "method": "llm",
+            "vendor_name": llm_result.vendor_name,
+            "vendor_address": llm_result.vendor_address,
+            "vendor_tax_id": llm_result.vendor_tax_id,
             "invoice_number": llm_result.invoice_number,
             "invoice_date": llm_result.invoice_date,
             "due_date": llm_result.due_date,
@@ -855,6 +907,9 @@ async def web_upload_extract(
         naive = extraction_service.naive_parse_invoice_fields(raw_text)
         extracted = {
             "method": "regex_fallback",
+            "vendor_name": naive.vendor_name,
+            "vendor_address": naive.vendor_address,
+            "vendor_tax_id": naive.vendor_tax_id,
             "invoice_number": naive.invoice_number,
             "invoice_date": naive.invoice_date.isoformat() if naive.invoice_date else None,
             "due_date": naive.due_date.isoformat() if naive.due_date else None,
@@ -866,11 +921,13 @@ async def web_upload_extract(
         }
 
     vendors = db.query(Vendor).filter(Vendor.organization_id == DEFAULT_ORG_ID).all()
+    matched_vendor_id = _match_vendor(vendors, extracted.get("vendor_name"), extracted.get("vendor_tax_id"))
 
     return templates.TemplateResponse(
         "upload_review.html",
         {
             "request": request, "raw_text": raw_text, "fields": extracted, "vendors": vendors,
+            "matched_vendor_id": matched_vendor_id,
             "saved_pdf_filename": saved_path.name, "current_user": current_user,
             "llm_backend_label": _llm_backend_label(),
         },
@@ -889,26 +946,9 @@ def _llm_backend_label() -> str:
 async def web_upload_confirm(request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
     form = await request.form()
     items = _parse_items_from_form(form)
-    vendors = db.query(Vendor).filter(Vendor.organization_id == DEFAULT_ORG_ID).all()
 
-    try:
-        payload = InvoiceCreate(
-            direction=InvoiceDirection.incoming,
-            invoice_number=form["invoice_number"],
-            vendor_id=int(form["vendor_id"]),
-            customer_id=None,
-            invoice_date=form["invoice_date"],
-            due_date=form["due_date"],
-            tax=Decimal(form.get("tax") or "0"),
-            discount=Decimal(form.get("discount") or "0"),
-            currency=(form.get("currency") or "USD").upper(),
-            payment_terms=form.get("payment_terms") or "Net 30",
-            items=items,
-            source_pdf_filename=form.get("source_pdf_filename") or None,
-        )
-        invoice = invoice_service.create_invoice(db, DEFAULT_ORG_ID, payload)
-        _audit(db, "invoice", invoice.id, "create", current_user.email, {"invoice_number": invoice.invoice_number, "source": "upload"})
-    except (InvoiceValidationError, ValueError) as e:
+    def _retry_render(error: str, vendor_id_for_dropdown: int | None):
+        vendors = db.query(Vendor).filter(Vendor.organization_id == DEFAULT_ORG_ID).all()
         retry_fields = {
             "method": "retry",
             "invoice_number": form.get("invoice_number"),
@@ -923,11 +963,41 @@ async def web_upload_confirm(request: Request, db: Session = Depends(get_db), cu
         return templates.TemplateResponse(
             "upload_review.html",
             {
-                "request": request, "raw_text": "", "fields": retry_fields, "vendors": vendors, "error": str(e),
+                "request": request, "raw_text": "", "fields": retry_fields, "vendors": vendors,
+                "matched_vendor_id": vendor_id_for_dropdown, "error": error,
                 "saved_pdf_filename": form.get("source_pdf_filename"), "current_user": current_user,
             },
             status_code=422,
         )
+
+    try:
+        # Resolved/created separately from invoice creation below - so a
+        # newly auto-created vendor survives even if the invoice itself
+        # fails validation, and a retry re-render pre-selects it instead
+        # of risking a second vendor getting created on resubmission.
+        vendor_id = _resolve_or_create_vendor(db, DEFAULT_ORG_ID, form)
+    except InvoiceValidationError as e:
+        return _retry_render(str(e), None)
+
+    try:
+        payload = InvoiceCreate(
+            direction=InvoiceDirection.incoming,
+            invoice_number=form["invoice_number"],
+            vendor_id=vendor_id,
+            customer_id=None,
+            invoice_date=form["invoice_date"],
+            due_date=form["due_date"],
+            tax=Decimal(form.get("tax") or "0"),
+            discount=Decimal(form.get("discount") or "0"),
+            currency=(form.get("currency") or "USD").upper(),
+            payment_terms=form.get("payment_terms") or "Net 30",
+            items=items,
+            source_pdf_filename=form.get("source_pdf_filename") or None,
+        )
+        invoice = invoice_service.create_invoice(db, DEFAULT_ORG_ID, payload)
+        _audit(db, "invoice", invoice.id, "create", current_user.email, {"invoice_number": invoice.invoice_number, "source": "upload"})
+    except (InvoiceValidationError, ValueError) as e:
+        return _retry_render(str(e), vendor_id)
     return RedirectResponse(f"/web/invoices/{invoice.id}", status_code=303)
 
 

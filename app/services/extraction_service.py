@@ -49,6 +49,9 @@ def _first_match(pattern: str, text: str) -> str | None:
 
 class ExtractedFields:
     def __init__(self):
+        self.vendor_name: str | None = None
+        self.vendor_address: str | None = None
+        self.vendor_tax_id: str | None = None
         self.invoice_number: str | None = None
         self.invoice_date: date | None = None
         self.due_date: date | None = None
@@ -56,9 +59,51 @@ class ExtractedFields:
         self.confidence: float = 0.0
 
 
+_HEADER_SKIP_LINES = ("invoice", "bill", "receipt")
+_LABELED_FIELD = re.compile(r"^(invoice|bill\s*to|ship\s*to|due|date|number|no\.?|tax|ein|vat|license)\b", re.IGNORECASE)
+
+
+def _guess_vendor_header(text: str) -> tuple[str | None, str | None]:
+    """No LLM here to actually understand the layout, so this is a
+    blunt but honest heuristic: on the overwhelming majority of real
+    invoices, the vendor's own name and address are the first two
+    non-blank lines, printed together near a logo/letterhead before
+    any label like "Invoice" or "Bill To" appears. Returns
+    (name, address) - address is only returned if a plausible second
+    line immediately follows the name (not a labeled field like
+    "Invoice Number: ..."), never guessed from elsewhere in the
+    document where it could just as easily be the buyer's."""
+    lines = [ln.strip() for ln in text.splitlines()]
+    lines = [ln for ln in lines if ln]  # drop blanks, keep order
+    name, address = None, None
+    for i, line in enumerate(lines):
+        if line.lower() in _HEADER_SKIP_LINES:
+            continue
+        name = line
+        if i + 1 < len(lines) and not _LABELED_FIELD.match(lines[i + 1]):
+            address = lines[i + 1]
+        break
+    return name, address
+
+
 def naive_parse_invoice_fields(text: str) -> ExtractedFields:
     result = ExtractedFields()
     found_count = 0
+
+    vendor_name, vendor_address = _guess_vendor_header(text)
+    if vendor_name:
+        result.vendor_name = vendor_name
+        found_count += 1
+    if vendor_address:
+        result.vendor_address = vendor_address
+
+    # Not counted toward found_count/confidence below - unlike the other
+    # fields, a tax ID is genuinely absent from most real invoices, so
+    # counting it would make ordinary, well-extracted invoices look
+    # artificially low-confidence just for not printing one.
+    tax_id = _first_match(r"(?:tax\s*id|ein|vat\s*(?:no\.?|number)|(?:business\s*)?license\s*#?)\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9\-]{3,20})", text)
+    if tax_id:
+        result.vendor_tax_id = tax_id
 
     invoice_number = _first_match(r"invoice\s*(?:#|number|no\.?)\s*[:\-]?\s*([A-Za-z0-9\-]+)", text)
     if invoice_number:
@@ -86,8 +131,8 @@ def naive_parse_invoice_fields(text: str) -> ExtractedFields:
         except InvalidOperation:
             pass
 
-    # confidence is just "how many of the 4 fields did we find" - a crude
+    # confidence is just "how many of the 5 fields did we find" - a crude
     # but honest stand-in until Phase 3's LLM extraction reports real
     # per-field confidence.
-    result.confidence = round(found_count / 4, 2)
+    result.confidence = round(found_count / 5, 2)
     return result

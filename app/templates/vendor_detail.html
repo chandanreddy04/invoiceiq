@@ -2,7 +2,7 @@
 {% block title %}{{ vendor.name }} - InvoiceIQ{% endblock %}
 {% block content %}
 <h1>🏭 {{ vendor.name }}</h1>
-<p>{{ vendor.email or "No email on file" }}{% if vendor.address %} · {{ vendor.address }}{% endif %}</p>
+<p>{{ vendor.email or "No email on file" }}{% if vendor.address %} · {{ vendor.address }}{% endif %}{% if vendor.tax_id %} · Tax ID {{ vendor.tax_id }}{% endif %}</p>
 <p style="color:#666; font-size:0.9em;">Vendor since {{ vendor.created_at.strftime("%Y-%m-%d") if vendor.created_at else "-" }}</p>
 
 <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:1rem; margin:1.5rem 0;">

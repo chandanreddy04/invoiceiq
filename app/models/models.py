@@ -81,6 +81,12 @@ class Vendor(Base):
     name = Column(String(255), nullable=False)
     email = Column(String(255))
     address = Column(String(500))
+    # A business's Tax ID/EIN/license number is a far more reliable
+    # match key than its name - two different vendors can share a
+    # near-identical name, but never a real tax ID. Used by the
+    # upload-review flow to identify a vendor already on file even
+    # when the extracted name doesn't match it exactly.
+    tax_id = Column(String(50))
     created_at = Column(DateTime, default=utcnow_naive)
 
     organization = relationship("Organization", back_populates="vendors")

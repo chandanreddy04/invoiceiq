@@ -20,16 +20,24 @@
 <form method="post" action="/web/upload/confirm">
     <input type="hidden" name="direction" value="incoming">
     {% if saved_pdf_filename %}<input type="hidden" name="source_pdf_filename" value="{{ saved_pdf_filename }}">{% endif %}
+    {% if fields.vendor_name %}<input type="hidden" name="extracted_vendor_name" value="{{ fields.vendor_name }}">{% endif %}
+    {% if fields.vendor_address %}<input type="hidden" name="extracted_vendor_address" value="{{ fields.vendor_address }}">{% endif %}
+    {% if fields.vendor_tax_id %}<input type="hidden" name="extracted_vendor_tax_id" value="{{ fields.vendor_tax_id }}">{% endif %}
 
     <div class="row">
         <div>
             <label>Vendor</label>
-            <select name="vendor_id" required>
+            <select name="vendor_id">
                 <option value="">-- select vendor --</option>
                 {% for v in vendors %}
-                <option value="{{ v.id }}">{{ v.name }}</option>
+                <option value="{{ v.id }}" {% if matched_vendor_id == v.id %}selected{% endif %}>{{ v.name }}</option>
                 {% endfor %}
             </select>
+            {% if matched_vendor_id %}
+            <p class="confidence">✅ Matched to an existing vendor{% if fields.vendor_tax_id %} by Tax ID{% else %} by name{% endif %} from the document itself.</p>
+            {% elif fields.vendor_name %}
+            <p class="confidence">🆕 "{{ fields.vendor_name }}" doesn't match anyone on file yet - leave this as "-- select vendor --" and it'll be added as a new vendor automatically when you save{% if fields.vendor_address %} (address: {{ fields.vendor_address }}){% endif %}{% if fields.vendor_tax_id %} (Tax ID: {{ fields.vendor_tax_id }}){% endif %}. Or pick an existing vendor above instead if this is really the same one.</p>
+            {% endif %}
         </div>
         <div>
             <label>Invoice number</label>

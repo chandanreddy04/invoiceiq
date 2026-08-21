@@ -1107,3 +1107,67 @@ def test_invoice_page_shows_remaining_creditable_and_issued_notes(client, mock_o
     page = client.get(f"/web/invoices/{invoice_id}").text
     assert "CN-0001" in page
     assert "Partial refund" in page
+
+
+def test_upload_confirm_auto_creates_vendor_when_no_match(client):
+    """The real bug this session fixed: the vendor dropdown always came
+    back blank after upload, even though the document's own name was
+    right there. Now an unmatched extracted name creates a real vendor
+    automatically, with whatever address/tax ID were also extracted."""
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/web/upload/confirm", data={
+        "direction": "incoming", "vendor_id": "",
+        "extracted_vendor_name": "Brand New Vendor LLC",
+        "extracted_vendor_address": "42 New St",
+        "extracted_vendor_tax_id": "12-3456789",
+        "invoice_number": "AUTO-VENDOR-1", "invoice_date": "2026-01-01", "due_date": "2026-01-31",
+        "currency": "USD", "tax": "0", "discount": "0",
+        "item_description_0": "Widget", "item_quantity_0": "1", "item_unit_price_0": "10",
+    }, follow_redirects=False)
+    assert resp.status_code == 303
+
+    from app.models.models import Vendor, Invoice
+    db = client.session_factory()
+    try:
+        vendor = db.query(Vendor).filter(Vendor.name == "Brand New Vendor LLC").first()
+        assert vendor is not None
+        assert vendor.address == "42 New St"
+        assert vendor.tax_id == "12-3456789"
+        invoice = db.query(Invoice).filter(Invoice.invoice_number == "AUTO-VENDOR-1").first()
+        assert invoice.vendor_id == vendor.id
+    finally:
+        db.close()
+
+
+def test_upload_confirm_reuses_existing_vendor_when_selected(client):
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/web/upload/confirm", data={
+        "direction": "incoming", "vendor_id": "1",  # seeded "Test Vendor"
+        "extracted_vendor_name": "Some Unrelated Extracted Name",
+        "invoice_number": "AUTO-VENDOR-2", "invoice_date": "2026-01-01", "due_date": "2026-01-31",
+        "currency": "USD", "tax": "0", "discount": "0",
+        "item_description_0": "Widget", "item_quantity_0": "1", "item_unit_price_0": "10",
+    }, follow_redirects=False)
+    assert resp.status_code == 303
+
+    from app.models.models import Vendor, Invoice
+    db = client.session_factory()
+    try:
+        # No second vendor should have been created from the extracted name.
+        assert db.query(Vendor).filter(Vendor.name == "Some Unrelated Extracted Name").count() == 0
+        invoice = db.query(Invoice).filter(Invoice.invoice_number == "AUTO-VENDOR-2").first()
+        assert invoice.vendor_id == 1
+    finally:
+        db.close()
+
+
+def test_upload_confirm_errors_clearly_with_no_vendor_and_no_extracted_name(client):
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/web/upload/confirm", data={
+        "direction": "incoming", "vendor_id": "",
+        "invoice_number": "AUTO-VENDOR-3", "invoice_date": "2026-01-01", "due_date": "2026-01-31",
+        "currency": "USD", "tax": "0", "discount": "0",
+        "item_description_0": "Widget", "item_quantity_0": "1", "item_unit_price_0": "10",
+    })
+    assert resp.status_code == 422
+    assert "no vendor" in resp.text.lower() or "vendor name" in resp.text.lower()

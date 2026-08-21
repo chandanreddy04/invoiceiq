@@ -19,6 +19,7 @@ class VendorCreate(BaseModel):
     name: str
     email: str | None = None
     address: str | None = None
+    tax_id: str | None = None
 
 
 class VendorRead(VendorCreate):

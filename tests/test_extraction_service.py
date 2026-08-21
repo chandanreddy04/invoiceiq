@@ -5,7 +5,7 @@ database - just text in, fields out.
 
 from decimal import Decimal
 
-from app.services.extraction_service import naive_parse_invoice_fields
+from app.services.extraction_service import naive_parse_invoice_fields, _guess_vendor_header
 
 
 SAMPLE_TEXT = """Sunrise Packaging Co.
@@ -43,7 +43,52 @@ def test_finds_total_not_subtotal():
     assert result.total == Decimal("435.00")
 
 
-def test_confidence_is_1_when_all_four_fields_found():
+def test_finds_vendor_name_from_first_line():
+    result = naive_parse_invoice_fields(SAMPLE_TEXT)
+    assert result.vendor_name == "Sunrise Packaging Co."
+
+
+def test_finds_vendor_address_from_second_line():
+    result = naive_parse_invoice_fields(SAMPLE_TEXT)
+    assert result.vendor_address == "21 Industrial Way"
+
+
+def test_vendor_address_not_guessed_when_second_line_is_a_label():
+    """A document with no real address line right after the vendor name
+    (e.g. it goes straight into "Invoice Number: ...") must not
+    mistake that label for the address."""
+    text = "Acme Corp\nInvoice Number: AC-1\n"
+    result = naive_parse_invoice_fields(text)
+    assert result.vendor_name == "Acme Corp"
+    assert result.vendor_address is None
+
+
+def test_finds_vendor_tax_id_when_present():
+    text = SAMPLE_TEXT + "\nTax ID: 91-2345678\n"
+    result = naive_parse_invoice_fields(text)
+    assert result.vendor_tax_id == "91-2345678"
+
+
+def test_vendor_tax_id_absent_does_not_affect_confidence():
+    """Most real invoices never print a tax ID - that must not make an
+    otherwise fully-extracted invoice look low-confidence."""
+    result = naive_parse_invoice_fields(SAMPLE_TEXT)
+    assert result.vendor_tax_id is None
+    assert result.confidence == 1.0
+
+
+def test_guess_vendor_header_skips_invoice_title_line():
+    text = "INVOICE\nGolden Grain Milling\n500 Mill Rd\n"
+    name, address = _guess_vendor_header(text)
+    assert name == "Golden Grain Milling"
+    assert address == "500 Mill Rd"
+
+
+def test_guess_vendor_header_returns_none_on_empty_text():
+    assert _guess_vendor_header("") == (None, None)
+
+
+def test_confidence_is_1_when_all_five_fields_found():
     result = naive_parse_invoice_fields(SAMPLE_TEXT)
     assert result.confidence == 1.0
 

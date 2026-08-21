@@ -31,7 +31,17 @@ SYSTEM_PROMPT = (
     "and fill in the fields as accurately as possible. If a field is not "
     "present in the text, leave it as null/default. Dates must be in "
     "YYYY-MM-DD format. Only include line items that actually appear as "
-    "billed goods or services - do not invent items."
+    "billed goods or services - do not invent items.\n\n"
+    "vendor_name is the business ISSUING this invoice (the seller) - it is "
+    "almost always the very first line of the document, near a logo or "
+    "letterhead. It is NOT the 'Bill To' / 'Ship To' name, which is the "
+    "buyer receiving the invoice - never confuse the two.\n\n"
+    "vendor_address is that same vendor's own mailing address (usually "
+    "printed right below its name) - not the buyer's 'Bill To' address.\n\n"
+    "vendor_tax_id is that same vendor's Tax ID, EIN, VAT number, or "
+    "business license number, if the document prints one anywhere "
+    "(often near the vendor's address, or labeled 'Tax ID', 'EIN', "
+    "'VAT No.', or 'License #'). Leave it null if none appears."
 )
 
 

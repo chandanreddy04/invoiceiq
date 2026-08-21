@@ -16,6 +16,9 @@ class LLMExtractedItem(BaseModel):
 
 
 class LLMExtractedInvoice(BaseModel):
+    vendor_name: str | None = Field(default=None, description="The vendor/seller's business name issuing this invoice - not the buyer's name")
+    vendor_address: str | None = Field(default=None, description="The vendor's own mailing address, if printed on the invoice - not the buyer's address")
+    vendor_tax_id: str | None = Field(default=None, description="The vendor's Tax ID, EIN, VAT number, or business license number, if printed on the invoice")
     invoice_number: str | None = Field(default=None, description="The invoice's own reference number")
     invoice_date: str | None = Field(default=None, description="ISO format YYYY-MM-DD")
     due_date: str | None = Field(default=None, description="ISO format YYYY-MM-DD")

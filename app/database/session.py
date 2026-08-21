@@ -42,6 +42,7 @@ _MIGRATIONS = [
     ("invoices", "source_pdf_filename", "VARCHAR(255)"),
     ("customers", "created_at", "TIMESTAMP"),
     ("invoices", "public_token", "VARCHAR(64)"),
+    ("vendors", "tax_id", "VARCHAR(50)"),
 ]
 
 # Separate from _MIGRATIONS above because a plain ADD COLUMN never
