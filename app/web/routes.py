@@ -341,9 +341,131 @@ def web_new_invoice_form(request: Request, db: Session = Depends(get_db), curren
     return templates.TemplateResponse(
         "invoice_form.html",
         {"request": request, "invoice": None, "vendors": vendors, "customers": customers, "values": {},
+         "line_items": None, "extraction": None,
          "form_action": "/web/invoices/new", "current_user": current_user,
          "suggested_invoice_number": invoice_service.suggest_next_invoice_number(db, DEFAULT_ORG_ID)},
     )
+
+
+@router.post("/invoices/new/upload", response_class=HTMLResponse)
+async def web_new_invoice_upload(
+    request: Request, file: UploadFile = File(...), db: Session = Depends(get_db), current_user: User = Depends(require_login)
+):
+    """The Upload Invoice page used to be a separate destination from
+    New Invoice, even though both do the same thing - add a new
+    (incoming) invoice, just with or without a PDF to extract from
+    first. This folds the extraction step directly into the New
+    Invoice page: it re-renders the same invoice_form.html, pre-filled
+    from whatever was extracted, instead of a separate review page."""
+    vendors = db.query(Vendor).filter(Vendor.organization_id == DEFAULT_ORG_ID).all()
+    customers = db.query(Customer).filter(Customer.organization_id == DEFAULT_ORG_ID).all()
+
+    def _blank_form_with_error(error: str):
+        return templates.TemplateResponse(
+            "invoice_form.html",
+            {"request": request, "invoice": None, "vendors": vendors, "customers": customers, "values": {},
+             "line_items": None, "extraction": None, "error": error,
+             "form_action": "/web/invoices/new", "current_user": current_user,
+             "suggested_invoice_number": invoice_service.suggest_next_invoice_number(db, DEFAULT_ORG_ID)},
+            status_code=422,
+        )
+
+    if not (file.filename or "").lower().endswith(".pdf"):
+        return _blank_form_with_error("Only PDF files are supported.")
+
+    file_bytes = await file.read()
+    if len(file_bytes) > MAX_UPLOAD_SIZE_BYTES:
+        return _blank_form_with_error(f"File is larger than the {MAX_UPLOAD_SIZE_MB}MB limit.")
+
+    # Save the original upload under a generated name - never the
+    # client-supplied filename, which closes off path traversal
+    # (e.g. "../../etc/passwd.pdf") entirely rather than trying to
+    # sanitize it.
+    saved_path = UPLOAD_DIR / f"{uuid.uuid4().hex}.pdf"
+    saved_path.write_bytes(file_bytes)
+
+    try:
+        raw_text = extraction_service.extract_text_from_pdf(file_bytes)
+    except Exception:
+        logger.exception("Failed to read PDF %s", saved_path)
+        return _blank_form_with_error("Could not read this PDF - it may be corrupted or password-protected.")
+
+    try:
+        llm_result = llm_extraction_service.extract_invoice_with_llm(raw_text)
+        extracted = {
+            "method": "llm",
+            "vendor_name": llm_result.vendor_name,
+            "vendor_address": llm_result.vendor_address,
+            "vendor_tax_id": llm_result.vendor_tax_id,
+            "invoice_number": llm_result.invoice_number,
+            "invoice_date": llm_result.invoice_date,
+            "due_date": llm_result.due_date,
+            "currency": llm_result.currency,
+            "tax": llm_result.tax,
+            "discount": llm_result.discount,
+            "line_items": [item.model_dump() for item in llm_result.line_items],
+            "total_hint": None,
+        }
+    except llm_extraction_service.LLMUnavailableError as e:
+        logger.info("Falling back to naive regex extraction: %s", e)
+        naive = extraction_service.naive_parse_invoice_fields(raw_text)
+        extracted = {
+            "method": "regex_fallback",
+            "vendor_name": naive.vendor_name,
+            "vendor_address": naive.vendor_address,
+            "vendor_tax_id": naive.vendor_tax_id,
+            "invoice_number": naive.invoice_number,
+            "invoice_date": naive.invoice_date.isoformat() if naive.invoice_date else None,
+            "due_date": naive.due_date.isoformat() if naive.due_date else None,
+            "currency": "USD",
+            "tax": 0,
+            "discount": 0,
+            "line_items": [],
+            "total_hint": naive.total,
+        }
+
+    matched_vendor_id, matched_by = _match_vendor(vendors, extracted.get("vendor_name"), extracted.get("vendor_tax_id"))
+
+    values = {
+        "direction": "incoming",
+        "vendor_id": matched_vendor_id,
+        "invoice_number": extracted.get("invoice_number") or "",
+        "invoice_date": extracted.get("invoice_date") or "",
+        "due_date": extracted.get("due_date") or "",
+        "currency": extracted.get("currency") or "USD",
+        "tax": extracted.get("tax") or 0,
+        "discount": extracted.get("discount") or 0,
+    }
+    extraction = {
+        "method": extracted["method"],
+        "vendor_name": extracted.get("vendor_name"),
+        "vendor_address": extracted.get("vendor_address"),
+        "vendor_tax_id": extracted.get("vendor_tax_id"),
+        "total_hint": extracted.get("total_hint"),
+        "raw_text": raw_text,
+        "matched_vendor_id": matched_vendor_id,
+        "matched_by": matched_by,
+        "saved_pdf_filename": saved_path.name,
+        "llm_backend_label": _llm_backend_label(),
+    }
+
+    return templates.TemplateResponse(
+        "invoice_form.html",
+        {
+            "request": request, "invoice": None, "vendors": vendors, "customers": customers,
+            "values": values, "line_items": extracted.get("line_items"), "extraction": extraction,
+            "form_action": "/web/invoices/new", "current_user": current_user,
+            "suggested_invoice_number": invoice_service.suggest_next_invoice_number(db, DEFAULT_ORG_ID),
+        },
+    )
+
+
+def _llm_backend_label() -> str:
+    """A real, found-live inaccuracy: this page used to hardcode "the
+    local LLM (phi3.5)" regardless of which backend actually served the
+    request - true locally, but flatly wrong on the cloud deployment,
+    which has no local model at all and runs on Groq instead."""
+    return f"Groq ({llm_extraction_service.MODEL_NAME})" if GROQ_API_KEY else f"the local LLM ({llm_extraction_service.MODEL_NAME})"
 
 
 @router.post("/invoices/new", response_class=HTMLResponse)
@@ -352,12 +474,69 @@ async def web_create_invoice(request: Request, db: Session = Depends(get_db), cu
     items = _parse_items_from_form(form)
     vendors = db.query(Vendor).filter(Vendor.organization_id == DEFAULT_ORG_ID).all()
     customers = db.query(Customer).filter(Customer.organization_id == DEFAULT_ORG_ID).all()
+    direction = form.get("direction")
+
+    def _retry_render(error: str, vendor_id_for_dropdown: int | None):
+        values = {
+            "direction": direction,
+            "invoice_number": form.get("invoice_number"),
+            "invoice_date": form.get("invoice_date"),
+            "due_date": form.get("due_date"),
+            "currency": form.get("currency") or "USD",
+            "tax": form.get("tax") or 0,
+            "discount": form.get("discount") or 0,
+            "vendor_id": vendor_id_for_dropdown,
+        }
+        # Only present if this submission came from the PDF-upload path
+        # (carried forward via hidden fields) - keeps the vendor
+        # match/auto-create hint accurate on a retry after a validation
+        # error, instead of losing the extraction context entirely.
+        extraction = None
+        if form.get("extracted_vendor_name"):
+            extraction = {
+                "method": None,
+                "vendor_name": form.get("extracted_vendor_name"),
+                "vendor_address": form.get("extracted_vendor_address"),
+                "vendor_tax_id": form.get("extracted_vendor_tax_id"),
+                "total_hint": None,
+                "raw_text": None,
+                "matched_vendor_id": vendor_id_for_dropdown,
+                "matched_by": None,
+                "saved_pdf_filename": form.get("source_pdf_filename"),
+            }
+        return templates.TemplateResponse(
+            "invoice_form.html",
+            {
+                "request": request, "invoice": None, "vendors": vendors, "customers": customers,
+                "values": values, "line_items": [item.model_dump() for item in items], "extraction": extraction,
+                "form_action": "/web/invoices/new", "error": error, "current_user": current_user,
+                "suggested_invoice_number": invoice_service.suggest_next_invoice_number(db, DEFAULT_ORG_ID),
+            },
+            status_code=422,
+        )
+
+    vendor_id = None
+    if direction == "incoming" and (
+        form.get("vendor_id") or form.get("extracted_vendor_name") or form.get("source_pdf_filename")
+    ):
+        # Only resolve/auto-create/enrich when there's actually a signal
+        # to resolve from - a plain manual entry with no vendor picked
+        # stays vendor-less, same as before this page gained the
+        # upload/extraction path. But a submission carrying
+        # source_pdf_filename came from that path, so if extraction
+        # found no vendor name AND nothing was picked manually either,
+        # that should still surface a clear error rather than silently
+        # saving a vendor-less invoice.
+        try:
+            vendor_id = _resolve_or_create_vendor(db, DEFAULT_ORG_ID, form)
+        except InvoiceValidationError as e:
+            return _retry_render(str(e), None)
 
     try:
         payload = InvoiceCreate(
-            direction=form["direction"],
+            direction=direction,
             invoice_number=form["invoice_number"],
-            vendor_id=int(form["vendor_id"]) if form.get("vendor_id") else None,
+            vendor_id=vendor_id,
             customer_id=int(form["customer_id"]) if form.get("customer_id") else None,
             invoice_date=form["invoice_date"],
             due_date=form["due_date"],
@@ -366,18 +545,12 @@ async def web_create_invoice(request: Request, db: Session = Depends(get_db), cu
             currency=(form.get("currency") or "USD").upper(),
             payment_terms=form.get("payment_terms") or "Net 30",
             items=items,
+            source_pdf_filename=form.get("source_pdf_filename") or None,
         )
         invoice = invoice_service.create_invoice(db, DEFAULT_ORG_ID, payload)
         _audit(db, "invoice", invoice.id, "create", current_user.email, {"invoice_number": invoice.invoice_number})
     except (InvoiceValidationError, ValueError) as e:
-        return templates.TemplateResponse(
-            "invoice_form.html",
-            {
-                "request": request, "invoice": None, "vendors": vendors, "customers": customers,
-                "values": dict(form), "form_action": "/web/invoices/new", "error": str(e), "current_user": current_user,
-            },
-            status_code=422,
-        )
+        return _retry_render(str(e), vendor_id)
     return RedirectResponse("/web/invoices", status_code=303)
 
 
@@ -400,7 +573,8 @@ def web_view_invoice(invoice_id: int, request: Request, db: Session = Depends(ge
         "invoice_form.html",
         {
             "request": request, "invoice": invoice, "vendors": vendors, "customers": customers,
-            "values": {}, "form_action": f"/web/invoices/{invoice_id}", "fraud_flag": fraud_flag, "comms": comms,
+            "values": {}, "line_items": None, "extraction": None,
+            "form_action": f"/web/invoices/{invoice_id}", "fraud_flag": fraud_flag, "comms": comms,
             "credit_notes": credit_notes, "remaining_creditable": remaining_creditable,
             "current_user": current_user,
         },
@@ -869,164 +1043,8 @@ def web_customer_detail(customer_id: int, request: Request, db: Session = Depend
     })
 
 
-# --- Upload / extraction ------------------------------------------------------
-
-@router.get("/upload", response_class=HTMLResponse)
-def web_upload_form(request: Request, current_user: User = Depends(require_login)):
-    return templates.TemplateResponse("upload.html", {"request": request, "current_user": current_user})
-
-
-@router.post("/upload", response_class=HTMLResponse)
-async def web_upload_extract(
-    request: Request, file: UploadFile = File(...), db: Session = Depends(get_db), current_user: User = Depends(require_login)
-):
-    # Section 16/58: reject anything that isn't a PDF, and enforce a
-    # size limit, before doing any real work with the upload.
-    if not (file.filename or "").lower().endswith(".pdf"):
-        return templates.TemplateResponse(
-            "upload.html", {"request": request, "current_user": current_user, "error": "Only PDF files are supported."},
-            status_code=422,
-        )
-
-    file_bytes = await file.read()
-    if len(file_bytes) > MAX_UPLOAD_SIZE_BYTES:
-        return templates.TemplateResponse(
-            "upload.html",
-            {"request": request, "current_user": current_user,
-             "error": f"File is larger than the {MAX_UPLOAD_SIZE_MB}MB limit."},
-            status_code=422,
-        )
-
-    # Save the original upload under a generated name - never the
-    # client-supplied filename, which closes off path traversal
-    # (e.g. "../../etc/passwd.pdf") entirely rather than trying to
-    # sanitize it.
-    saved_path = UPLOAD_DIR / f"{uuid.uuid4().hex}.pdf"
-    saved_path.write_bytes(file_bytes)
-
-    try:
-        raw_text = extraction_service.extract_text_from_pdf(file_bytes)
-    except Exception:
-        logger.exception("Failed to read PDF %s", saved_path)
-        return templates.TemplateResponse(
-            "upload.html",
-            {"request": request, "current_user": current_user, "error": "Could not read this PDF - it may be corrupted or password-protected."},
-            status_code=422,
-        )
-
-    try:
-        llm_result = llm_extraction_service.extract_invoice_with_llm(raw_text)
-        extracted = {
-            "method": "llm",
-            "vendor_name": llm_result.vendor_name,
-            "vendor_address": llm_result.vendor_address,
-            "vendor_tax_id": llm_result.vendor_tax_id,
-            "invoice_number": llm_result.invoice_number,
-            "invoice_date": llm_result.invoice_date,
-            "due_date": llm_result.due_date,
-            "currency": llm_result.currency,
-            "tax": llm_result.tax,
-            "discount": llm_result.discount,
-            "line_items": [item.model_dump() for item in llm_result.line_items],
-            "total_hint": None,
-        }
-    except llm_extraction_service.LLMUnavailableError as e:
-        logger.info("Falling back to naive regex extraction: %s", e)
-        naive = extraction_service.naive_parse_invoice_fields(raw_text)
-        extracted = {
-            "method": "regex_fallback",
-            "vendor_name": naive.vendor_name,
-            "vendor_address": naive.vendor_address,
-            "vendor_tax_id": naive.vendor_tax_id,
-            "invoice_number": naive.invoice_number,
-            "invoice_date": naive.invoice_date.isoformat() if naive.invoice_date else None,
-            "due_date": naive.due_date.isoformat() if naive.due_date else None,
-            "currency": "USD",
-            "tax": 0,
-            "discount": 0,
-            "line_items": [],
-            "total_hint": naive.total,
-        }
-
-    vendors = db.query(Vendor).filter(Vendor.organization_id == DEFAULT_ORG_ID).all()
-    matched_vendor_id, matched_by = _match_vendor(vendors, extracted.get("vendor_name"), extracted.get("vendor_tax_id"))
-
-    return templates.TemplateResponse(
-        "upload_review.html",
-        {
-            "request": request, "raw_text": raw_text, "fields": extracted, "vendors": vendors,
-            "matched_vendor_id": matched_vendor_id, "matched_by": matched_by,
-            "saved_pdf_filename": saved_path.name, "current_user": current_user,
-            "llm_backend_label": _llm_backend_label(),
-        },
-    )
-
-
-def _llm_backend_label() -> str:
-    """A real, found-live inaccuracy: this page used to hardcode "the
-    local LLM (phi3.5)" regardless of which backend actually served the
-    request - true locally, but flatly wrong on the cloud deployment,
-    which has no local model at all and runs on Groq instead."""
-    return f"Groq ({llm_extraction_service.MODEL_NAME})" if GROQ_API_KEY else f"the local LLM ({llm_extraction_service.MODEL_NAME})"
-
-
-@router.post("/upload/confirm", response_class=HTMLResponse)
-async def web_upload_confirm(request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
-    form = await request.form()
-    items = _parse_items_from_form(form)
-
-    def _retry_render(error: str, vendor_id_for_dropdown: int | None):
-        vendors = db.query(Vendor).filter(Vendor.organization_id == DEFAULT_ORG_ID).all()
-        retry_fields = {
-            "method": "retry",
-            "invoice_number": form.get("invoice_number"),
-            "invoice_date": form.get("invoice_date"),
-            "due_date": form.get("due_date"),
-            "currency": form.get("currency") or "USD",
-            "tax": form.get("tax") or 0,
-            "discount": form.get("discount") or 0,
-            "line_items": [item.model_dump() for item in items],
-            "total_hint": None,
-        }
-        return templates.TemplateResponse(
-            "upload_review.html",
-            {
-                "request": request, "raw_text": "", "fields": retry_fields, "vendors": vendors,
-                "matched_vendor_id": vendor_id_for_dropdown, "error": error,
-                "saved_pdf_filename": form.get("source_pdf_filename"), "current_user": current_user,
-            },
-            status_code=422,
-        )
-
-    try:
-        # Resolved/created separately from invoice creation below - so a
-        # newly auto-created vendor survives even if the invoice itself
-        # fails validation, and a retry re-render pre-selects it instead
-        # of risking a second vendor getting created on resubmission.
-        vendor_id = _resolve_or_create_vendor(db, DEFAULT_ORG_ID, form)
-    except InvoiceValidationError as e:
-        return _retry_render(str(e), None)
-
-    try:
-        payload = InvoiceCreate(
-            direction=InvoiceDirection.incoming,
-            invoice_number=form["invoice_number"],
-            vendor_id=vendor_id,
-            customer_id=None,
-            invoice_date=form["invoice_date"],
-            due_date=form["due_date"],
-            tax=Decimal(form.get("tax") or "0"),
-            discount=Decimal(form.get("discount") or "0"),
-            currency=(form.get("currency") or "USD").upper(),
-            payment_terms=form.get("payment_terms") or "Net 30",
-            items=items,
-            source_pdf_filename=form.get("source_pdf_filename") or None,
-        )
-        invoice = invoice_service.create_invoice(db, DEFAULT_ORG_ID, payload)
-        _audit(db, "invoice", invoice.id, "create", current_user.email, {"invoice_number": invoice.invoice_number, "source": "upload"})
-    except (InvoiceValidationError, ValueError) as e:
-        return _retry_render(str(e), vendor_id)
-    return RedirectResponse(f"/web/invoices/{invoice.id}", status_code=303)
+# --- (Upload/extraction now lives inline on the New Invoice page - see
+# web_new_invoice_upload above, under "Invoices".) ------------------------
 
 
 @router.get("/invoices/{invoice_id}/source-pdf")

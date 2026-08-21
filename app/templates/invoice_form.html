@@ -41,7 +41,39 @@ function streamRiskExplanation(invoiceId) {
 </script>
 {% endif %}
 
+{% if not invoice %}
+<div style="border:1px solid #ddd; border-radius:6px; padding:1rem; margin-bottom:1.5rem; background:#f7f7f7;">
+    <h3 style="margin-top:0;">📄 Have a vendor PDF instead?</h3>
+    <p class="confidence">Upload it here to auto-fill the form below - vendor, dates, and line items. Text is extracted with PyMuPDF; you'll review and correct everything before saving. Only for incoming/vendor invoices, and only PDFs with a real text layer (not scanned images).</p>
+    <form method="post" action="/web/invoices/new/upload" enctype="multipart/form-data" style="display:flex; gap:0.75rem; align-items:center;">
+        <input type="file" name="file" accept="application/pdf" required style="flex:1;">
+        <button type="submit" class="secondary" style="margin-top:0;">Extract from PDF</button>
+    </form>
+</div>
+{% endif %}
+
+{% if extraction %}
+{% if extraction.method == "llm" %}
+<p class="confidence">✅ Extracted by {{ extraction.llm_backend_label }} - including line items. Verify everything below before saving.</p>
+{% elif extraction.method == "regex_fallback" %}
+<p class="confidence">⚠️ LLM was unavailable, fell back to the simple pattern-matcher (header fields only - no line items found automatically; enter them below).
+{% if extraction.total_hint %} Detected total on the document: <strong>{{ extraction.total_hint }}</strong> - use this to check your line items sum correctly.{% endif %}</p>
+{% endif %}
+{% if extraction.raw_text %}
+<details>
+    <summary>Raw extracted text ({{ extraction.raw_text|length }} characters)</summary>
+    <pre style="white-space: pre-wrap; background:#f7f7f7; padding: 1rem; max-height: 300px; overflow:auto;">{{ extraction.raw_text }}</pre>
+</details>
+{% endif %}
+{% endif %}
+
 <form method="post" action="{{ form_action }}">
+    {% if extraction %}
+    {% if extraction.vendor_name %}<input type="hidden" name="extracted_vendor_name" value="{{ extraction.vendor_name }}">{% endif %}
+    {% if extraction.vendor_address %}<input type="hidden" name="extracted_vendor_address" value="{{ extraction.vendor_address }}">{% endif %}
+    {% if extraction.vendor_tax_id %}<input type="hidden" name="extracted_vendor_tax_id" value="{{ extraction.vendor_tax_id }}">{% endif %}
+    {% if extraction.saved_pdf_filename %}<input type="hidden" name="source_pdf_filename" value="{{ extraction.saved_pdf_filename }}">{% endif %}
+    {% endif %}
     <div class="row">
         <div>
             <label>Direction</label>
@@ -80,9 +112,16 @@ function streamRiskExplanation(invoiceId) {
             <select name="vendor_id">
                 <option value="">-- none --</option>
                 {% for v in vendors %}
-                <option value="{{ v.id }}" {% if invoice and invoice.vendor_id == v.id %}selected{% endif %}>{{ v.name }}</option>
+                <option value="{{ v.id }}" {% if (invoice and invoice.vendor_id == v.id) or (not invoice and values.vendor_id == v.id) %}selected{% endif %}>{{ v.name }}</option>
                 {% endfor %}
             </select>
+            {% if extraction %}
+            {% if extraction.matched_vendor_id %}
+            <p class="confidence">✅ Matched to an existing vendor{% if extraction.matched_by == "tax_id" %} by Tax ID{% elif extraction.matched_by == "name" %} by name{% endif %} from the document itself. Any address/Tax ID missing on that vendor's own record will be filled in from this document when you save.</p>
+            {% elif extraction.vendor_name %}
+            <p class="confidence">🆕 "{{ extraction.vendor_name }}" doesn't match anyone on file yet - leave this as "-- none --" and it'll be added as a new vendor automatically when you save{% if extraction.vendor_address %} (address: {{ extraction.vendor_address }}){% endif %}{% if extraction.vendor_tax_id %} (Tax ID: {{ extraction.vendor_tax_id }}){% endif %}. Or pick an existing vendor above instead if this is really the same one.</p>
+            {% endif %}
+            {% endif %}
         </div>
         <div>
             <label>Customer (for outgoing)</label>
@@ -149,7 +188,7 @@ function streamRiskExplanation(invoiceId) {
     <table class="items-table">
         <tr><th>Description</th><th>Quantity</th><th>Unit price</th><th>Category</th></tr>
         {% for i in range(8) %}
-        {% set existing = invoice.items[i] if invoice and i < invoice.items|length else none %}
+        {% set existing = invoice.items[i] if invoice and i < invoice.items|length else (line_items[i] if line_items and i < line_items|length else none) %}
         <tr>
             <td><input type="text" name="item_description_{{ i }}" value="{{ existing.description if existing else '' }}"></td>
             <td><input type="number" step="0.001" name="item_quantity_{{ i }}" value="{{ existing.quantity if existing else '' }}"></td>

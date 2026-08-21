@@ -1115,7 +1115,7 @@ def test_upload_confirm_auto_creates_vendor_when_no_match(client):
     right there. Now an unmatched extracted name creates a real vendor
     automatically, with whatever address/tax ID were also extracted."""
     _login(client, OWNER_EMAIL, OWNER_PASSWORD)
-    resp = client.post("/web/upload/confirm", data={
+    resp = client.post("/web/invoices/new", data={
         "direction": "incoming", "vendor_id": "",
         "extracted_vendor_name": "Brand New Vendor LLC",
         "extracted_vendor_address": "42 New St",
@@ -1141,7 +1141,7 @@ def test_upload_confirm_auto_creates_vendor_when_no_match(client):
 
 def test_upload_confirm_reuses_existing_vendor_when_selected(client):
     _login(client, OWNER_EMAIL, OWNER_PASSWORD)
-    resp = client.post("/web/upload/confirm", data={
+    resp = client.post("/web/invoices/new", data={
         "direction": "incoming", "vendor_id": "1",  # seeded "Test Vendor"
         "extracted_vendor_name": "Some Unrelated Extracted Name",
         "invoice_number": "AUTO-VENDOR-2", "invoice_date": "2026-01-01", "due_date": "2026-01-31",
@@ -1162,9 +1162,14 @@ def test_upload_confirm_reuses_existing_vendor_when_selected(client):
 
 
 def test_upload_confirm_errors_clearly_with_no_vendor_and_no_extracted_name(client):
+    """Simulates a real (if edge-case) upload where extraction found no
+    vendor name at all: source_pdf_filename is present (this came from
+    the PDF-upload path) but neither vendor_id nor extracted_vendor_name
+    is - this must still surface a clear error, not silently save a
+    vendor-less invoice, unlike plain manual entry with no PDF at all."""
     _login(client, OWNER_EMAIL, OWNER_PASSWORD)
-    resp = client.post("/web/upload/confirm", data={
-        "direction": "incoming", "vendor_id": "",
+    resp = client.post("/web/invoices/new", data={
+        "direction": "incoming", "vendor_id": "", "source_pdf_filename": "somefile.pdf",
         "invoice_number": "AUTO-VENDOR-3", "invoice_date": "2026-01-01", "due_date": "2026-01-31",
         "currency": "USD", "tax": "0", "discount": "0",
         "item_description_0": "Widget", "item_quantity_0": "1", "item_unit_price_0": "10",
@@ -1178,7 +1183,7 @@ def test_upload_confirm_enriches_matched_vendor_missing_address_and_tax_id(clien
     used to leave that vendor's own record exactly as it was, even if
     this invoice's extraction found an address/Tax ID it was missing."""
     _login(client, OWNER_EMAIL, OWNER_PASSWORD)
-    resp = client.post("/web/upload/confirm", data={
+    resp = client.post("/web/invoices/new", data={
         "direction": "incoming", "vendor_id": "1",  # seeded "Test Vendor" - no address/tax_id
         "extracted_vendor_address": "1 Test Vendor Ave",
         "extracted_vendor_tax_id": "44-5556667",
@@ -1196,3 +1201,36 @@ def test_upload_confirm_enriches_matched_vendor_missing_address_and_tax_id(clien
         assert vendor.tax_id == "44-5556667"
     finally:
         db.close()
+
+
+def test_manual_incoming_invoice_with_no_vendor_still_allowed(client):
+    """The Upload page was folded into New Invoice, but plain manual
+    entry (no PDF involved at all) must keep working exactly as before:
+    an incoming invoice with no vendor picked and nothing extracted is
+    not an error - only a real upload that came back with nothing
+    usable should be."""
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/web/invoices/new", data={
+        "direction": "incoming", "vendor_id": "",
+        "invoice_number": "NO-VENDOR-1", "invoice_date": "2026-01-01", "due_date": "2026-01-31",
+        "currency": "USD", "tax": "0", "discount": "0",
+        "item_description_0": "Widget", "item_quantity_0": "1", "item_unit_price_0": "10",
+    }, follow_redirects=False)
+    assert resp.status_code == 303
+
+    from app.models.models import Invoice
+    db = client.session_factory()
+    try:
+        invoice = db.query(Invoice).filter(Invoice.invoice_number == "NO-VENDOR-1").first()
+        assert invoice is not None
+        assert invoice.vendor_id is None
+    finally:
+        db.close()
+
+
+def test_standalone_upload_page_no_longer_exists(client):
+    """The Upload Invoice page was removed - its function now lives on
+    the New Invoice page (POST /web/invoices/new/upload)."""
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    assert client.get("/web/upload").status_code == 404
+    assert client.post("/web/upload/confirm", data={}).status_code == 404

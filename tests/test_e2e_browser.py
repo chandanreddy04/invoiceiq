@@ -138,7 +138,12 @@ def test_create_invoice_via_real_rendered_form(live_server, page):
     page.fill('input[name="item_description_0"]', "Browser test widget")
     page.fill('input[name="item_quantity_0"]', "1")
     page.fill('input[name="item_unit_price_0"]', "42")
-    page.click('button[type="submit"]')
+    # New Invoice now also carries the "Extract from PDF" upload widget's
+    # own submit button above this one (folded in from the old standalone
+    # Upload page) - a bare button[type="submit"] selector would match
+    # that one first since it comes earlier in the DOM, so this must be
+    # scoped to the actual invoice-creation button by its text.
+    page.click('button:has-text("Create invoice")')
 
     # page.click() on a real <form> submit auto-waits for the navigation
     # the POST redirect triggers - no separate wait_for_url() needed (and
