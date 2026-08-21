@@ -49,8 +49,13 @@ DEFAULT_ORG_ID = 1
 
 
 def _parse_items_from_form(form) -> list[InvoiceItemCreate]:
+    """The line-items table on the New/Edit Invoice and Recurring Invoice
+    forms grows dynamically (one row at a time, as the last row gets
+    filled in) rather than showing a fixed block of empty boxes, so this
+    needs to read well past whatever the smallest real invoice would
+    need - 50 is a generous ceiling, not an expected typical count."""
     items = []
-    for i in range(8):
+    for i in range(50):
         desc = (form.get(f"item_description_{i}") or "").strip()
         if not desc:
             continue

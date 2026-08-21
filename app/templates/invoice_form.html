@@ -185,11 +185,12 @@ function streamRiskExplanation(invoiceId) {
     {% endif %}
 
     <h3>Line items</h3>
-    <table class="items-table">
+    <table class="items-table" id="items-table">
         <tr><th>Description</th><th>Quantity</th><th>Unit price</th><th>Category</th></tr>
-        {% for i in range(8) %}
-        {% set existing = invoice.items[i] if invoice and i < invoice.items|length else (line_items[i] if line_items and i < line_items|length else none) %}
-        <tr>
+        {% set existing_items = invoice.items if invoice else (line_items if line_items else []) %}
+        {% for i in range(existing_items|length or 1) %}
+        {% set existing = existing_items[i] if i < existing_items|length else none %}
+        <tr class="item-row">
             <td><input type="text" name="item_description_{{ i }}" value="{{ existing.description if existing else '' }}"></td>
             <td><input type="number" step="0.001" name="item_quantity_{{ i }}" value="{{ existing.quantity if existing else '' }}"></td>
             <td><input type="number" step="0.01" name="item_unit_price_{{ i }}" value="{{ existing.unit_price if existing else '' }}"></td>
@@ -197,8 +198,39 @@ function streamRiskExplanation(invoiceId) {
         </tr>
         {% endfor %}
     </table>
+    <script>
+        (function () {
+            const table = document.getElementById("items-table");
+            let rowCount = table.querySelectorAll(".item-row").length;
+
+            function attachGrowListener(row) {
+                row.querySelectorAll("input").forEach((input) => {
+                    input.addEventListener("input", () => {
+                        const rows = table.querySelectorAll(".item-row");
+                        const isLastRow = row === rows[rows.length - 1];
+                        const hasValue = Array.from(row.querySelectorAll("input")).some((el) => el.value.trim() !== "");
+                        if (isLastRow && hasValue) {
+                            const tr = document.createElement("tr");
+                            tr.className = "item-row";
+                            tr.innerHTML = `
+                                <td><input type="text" name="item_description_${rowCount}"></td>
+                                <td><input type="number" step="0.001" name="item_quantity_${rowCount}"></td>
+                                <td><input type="number" step="0.01" name="item_unit_price_${rowCount}"></td>
+                                <td></td>
+                            `;
+                            table.appendChild(tr);
+                            attachGrowListener(tr);
+                            rowCount++;
+                        }
+                    });
+                });
+            }
+
+            table.querySelectorAll(".item-row").forEach(attachGrowListener);
+        })();
+    </script>
     <p class="confidence">Category is set automatically by the Classification Agent (see Agent Activity) and carries over between edits - it isn't a form field here.</p>
-    <p class="confidence">Leave rows blank to skip them. Totals (subtotal/total) are always computed by the server from these rows plus tax/discount - not editable directly.</p>
+    <p class="confidence">A new blank row appears automatically once you start filling the last one - leave the final row blank when you're done. Totals (subtotal/total) are always computed by the server from these rows plus tax/discount - not editable directly.</p>
 
     <button type="submit">{{ "Save changes" if invoice else "Create invoice" }}</button>
 </form>
