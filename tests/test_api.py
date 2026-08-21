@@ -1171,3 +1171,28 @@ def test_upload_confirm_errors_clearly_with_no_vendor_and_no_extracted_name(clie
     })
     assert resp.status_code == 422
     assert "no vendor" in resp.text.lower() or "vendor name" in resp.text.lower()
+
+
+def test_upload_confirm_enriches_matched_vendor_missing_address_and_tax_id(client):
+    """Requested directly: matching an existing vendor by name/tax ID
+    used to leave that vendor's own record exactly as it was, even if
+    this invoice's extraction found an address/Tax ID it was missing."""
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/web/upload/confirm", data={
+        "direction": "incoming", "vendor_id": "1",  # seeded "Test Vendor" - no address/tax_id
+        "extracted_vendor_address": "1 Test Vendor Ave",
+        "extracted_vendor_tax_id": "44-5556667",
+        "invoice_number": "ENRICH-1", "invoice_date": "2026-01-01", "due_date": "2026-01-31",
+        "currency": "USD", "tax": "0", "discount": "0",
+        "item_description_0": "Widget", "item_quantity_0": "1", "item_unit_price_0": "10",
+    }, follow_redirects=False)
+    assert resp.status_code == 303
+
+    from app.models.models import Vendor
+    db = client.session_factory()
+    try:
+        vendor = db.get(Vendor, 1)
+        assert vendor.address == "1 Test Vendor Ave"
+        assert vendor.tax_id == "44-5556667"
+    finally:
+        db.close()

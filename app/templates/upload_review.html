@@ -34,7 +34,7 @@
                 {% endfor %}
             </select>
             {% if matched_vendor_id %}
-            <p class="confidence">✅ Matched to an existing vendor{% if fields.vendor_tax_id %} by Tax ID{% else %} by name{% endif %} from the document itself.</p>
+            <p class="confidence">✅ Matched to an existing vendor{% if matched_by == "tax_id" %} by Tax ID{% elif matched_by == "name" %} by name{% endif %} from the document itself. Any address/Tax ID missing on that vendor's own record will be filled in from this document when you save.</p>
             {% elif fields.vendor_name %}
             <p class="confidence">🆕 "{{ fields.vendor_name }}" doesn't match anyone on file yet - leave this as "-- select vendor --" and it'll be added as a new vendor automatically when you save{% if fields.vendor_address %} (address: {{ fields.vendor_address }}){% endif %}{% if fields.vendor_tax_id %} (Tax ID: {{ fields.vendor_tax_id }}){% endif %}. Or pick an existing vendor above instead if this is really the same one.</p>
             {% endif %}

@@ -63,38 +63,66 @@ def _parse_items_from_form(form) -> list[InvoiceItemCreate]:
     return items
 
 
-def _match_vendor(vendors: list, extracted_name: str | None, extracted_tax_id: str | None) -> int | None:
+def _match_vendor(vendors: list, extracted_name: str | None, extracted_tax_id: str | None) -> tuple[int | None, str | None]:
     """Tax ID is checked first and wins outright when it matches - two
     real businesses never share a real tax ID, but they can easily
     share a near-identical name (a franchise, a rebrand, a typo in the
     extraction). Falls back to a case/whitespace-insensitive name
-    match only when no tax ID match was found."""
+    match only when no tax ID match was found. Returns (vendor_id,
+    matched_by) - matched_by is "tax_id" | "name" | None, reported
+    separately from "did the document merely contain a tax ID" so the
+    review page never claims a tax-ID match that didn't actually
+    happen (e.g. the document has one, but the matched vendor's own
+    record doesn't, so the real match was by name)."""
     tax_id = (extracted_tax_id or "").strip().lower()
     if tax_id:
         for v in vendors:
             if v.tax_id and v.tax_id.strip().lower() == tax_id:
-                return v.id
+                return v.id, "tax_id"
 
     name = (extracted_name or "").strip().lower()
     if name:
         for v in vendors:
             if v.name.strip().lower() == name:
-                return v.id
+                return v.id, "name"
 
-    return None
+    return None, None
+
+
+def _enrich_vendor_if_blank(vendor: Vendor, form) -> None:
+    """A vendor matched by name (or picked manually) can still be
+    missing its address/Tax ID - filling those in from THIS invoice's
+    extraction closes a real gap otherwise: a vendor identified purely
+    by name would never pick up its Tax ID just because a later
+    invoice happened to print one. Only ever fills in a field that was
+    genuinely blank - never overwrites a value already on file, even
+    if this extraction disagrees with it."""
+    extracted_address = (form.get("extracted_vendor_address") or "").strip()
+    extracted_tax_id = (form.get("extracted_vendor_tax_id") or "").strip()
+    if not vendor.address and extracted_address:
+        vendor.address = extracted_address
+    if not vendor.tax_id and extracted_tax_id:
+        vendor.tax_id = extracted_tax_id
 
 
 def _resolve_or_create_vendor(db: Session, org_id: int, form) -> int:
     """An explicit vendor_id from the review page's dropdown always
     wins - a human deciding "use this existing vendor" beats a guess.
-    Otherwise, if extraction found a vendor name that didn't match
-    anyone on file, create that vendor now (with whatever address/tax
-    ID were also extracted) - the same record a human would end up
-    with by going to the Vendors page and adding it themselves first,
-    just without the extra trip."""
+    That vendor still gets enriched with any address/Tax ID this
+    invoice's extraction found and it was missing (see
+    _enrich_vendor_if_blank). Otherwise, if extraction found a vendor
+    name that didn't match anyone on file, create that vendor now
+    (with whatever address/tax ID were also extracted) - the same
+    record a human would end up with by going to the Vendors page and
+    adding it themselves first, just without the extra trip."""
     vendor_id = form.get("vendor_id")
     if vendor_id:
-        return int(vendor_id)
+        vendor_id = int(vendor_id)
+        vendor = db.get(Vendor, vendor_id)
+        if vendor is not None:
+            _enrich_vendor_if_blank(vendor, form)
+            db.commit()
+        return vendor_id
 
     extracted_name = (form.get("extracted_vendor_name") or "").strip()
     if not extracted_name:
@@ -921,13 +949,13 @@ async def web_upload_extract(
         }
 
     vendors = db.query(Vendor).filter(Vendor.organization_id == DEFAULT_ORG_ID).all()
-    matched_vendor_id = _match_vendor(vendors, extracted.get("vendor_name"), extracted.get("vendor_tax_id"))
+    matched_vendor_id, matched_by = _match_vendor(vendors, extracted.get("vendor_name"), extracted.get("vendor_tax_id"))
 
     return templates.TemplateResponse(
         "upload_review.html",
         {
             "request": request, "raw_text": raw_text, "fields": extracted, "vendors": vendors,
-            "matched_vendor_id": matched_vendor_id,
+            "matched_vendor_id": matched_vendor_id, "matched_by": matched_by,
             "saved_pdf_filename": saved_path.name, "current_user": current_user,
             "llm_backend_label": _llm_backend_label(),
         },
