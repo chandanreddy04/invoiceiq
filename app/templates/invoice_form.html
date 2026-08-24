@@ -35,9 +35,11 @@
         <summary style="cursor:pointer; font-size:0.9em;">🧠 AI's borderline-case deliberation</summary>
         <p class="confidence" style="white-space:pre-wrap;">{{ fraud_flag.reasoning_trace }}</p>
     </details>
-    {% else %}
+    {% elif reasoning_available %}
     <button type="button" id="borderline-review-btn" onclick="streamBorderlineReview({{ invoice.id }})" style="font-size:0.85em;">🧠 Get AI's second opinion (can take several minutes on a local model)</button>
     <pre id="borderline-review-output" style="display:none; white-space:pre-wrap; font-family:inherit; margin-top:0.5rem;"></pre>
+    {% else %}
+    <p class="confidence" style="margin:0;">🧠 AI second opinions aren't available on this deployment yet - only wired to a local Ollama backend so far.</p>
     {% endif %}
 </div>
 <script>

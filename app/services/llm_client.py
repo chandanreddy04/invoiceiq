@@ -31,6 +31,19 @@ class LLMUnavailableError(Exception):
     """Raised when the active LLM backend can't be reached or returns unusable output."""
 
 
+def reasoning_available() -> bool:
+    """Whether reason()/reason_stream() can work AT ALL right now - only
+    the Ollama backend implements them (see reason()'s docstring), so
+    this is False whenever Groq is the active backend, independent of
+    is_available()'s narration-backend check below. Exists so callers
+    (the Fraud/Risk Agent's borderline-case button) can decide whether to
+    offer that feature at all, rather than showing it and having it fail
+    with an Ollama-specific troubleshooting message on the cloud
+    deployment - the exact class of bug ca5db49 already fixed once for
+    the upload page's "local LLM" banner claiming to be local on Render."""
+    return not GROQ_API_KEY
+
+
 def chat(messages: list[dict], schema: dict | None = None, temperature: float = 0.0) -> str:
     """Returns the model's raw reply text. `schema` is a Pydantic model's
     model_json_schema() - Ollama constrains decoding to it directly;
