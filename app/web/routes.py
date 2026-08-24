@@ -32,7 +32,7 @@ from app.models.models import (
 )
 from app.schemas.invoice import InvoiceCreate, InvoiceItemCreate, InvoiceUpdate
 from app.schemas.party import VendorCreate, CustomerCreate
-from app.services import invoice_service, extraction_service, llm_extraction_service, invoice_pdf_service, email_service, recurring_invoice_service, credit_note_service, llm_client
+from app.services import invoice_service, extraction_service, llm_extraction_service, invoice_pdf_service, email_service, recurring_invoice_service, credit_note_service
 from app.schemas.recurring_invoice import RecurringInvoiceCreate
 from app.services.validation_service import InvoiceValidationError
 from app.agents import orchestrator, communication_agent, payment_ap_agent, collections_agent, fraud_risk_agent
@@ -581,7 +581,6 @@ def web_view_invoice(invoice_id: int, request: Request, db: Session = Depends(ge
             "values": {}, "line_items": None, "extraction": None,
             "form_action": f"/web/invoices/{invoice_id}", "fraud_flag": fraud_flag, "comms": comms,
             "credit_notes": credit_notes, "remaining_creditable": remaining_creditable,
-            "reasoning_available": llm_client.reasoning_available(),
             "current_user": current_user,
         },
     )
@@ -674,13 +673,12 @@ def web_stream_borderline_review(invoice_id: int, db: Session = Depends(get_db),
                     thinking_so_far.append(chunk["text"])
                     yield f"data: {chunk['text'].replace(chr(10), ' ')}\n\n"
         except llm_extraction_service.LLMUnavailableError:
-            # Same message either way it can fail: not wired to Groq yet
-            # (the cloud deployment) or Ollama/deepseek-r1 genuinely down
-            # locally - reasoning_available() in the template already
-            # hides this button on the cloud deployment, so reaching this
-            # branch there would mean someone hit the URL directly.
+            # Backend-specific troubleshooting, same idea as the narration
+            # stream's fallback above - a bad/missing GROQ_API_KEY and a
+            # not-running local Ollama fail the same way from the caller's
+            # side (LLMUnavailableError), but the fix looks nothing alike.
             if GROQ_API_KEY:
-                yield "data: [reasoning-model second opinions aren't available on this deployment yet - only wired to a local Ollama backend so far]\n\n"
+                yield "data: [reasoning model unavailable - check GROQ_API_KEY and Groq's status]\n\n"
             else:
                 yield "data: [reasoning model unavailable - is `ollama pull deepseek-r1:8b` done and `ollama serve` running?]\n\n"
             yield "event: done\ndata: \n\n"

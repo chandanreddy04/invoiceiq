@@ -8,7 +8,7 @@ deployment needs a different backend - not different agent code.
 When GROQ_API_KEY is set (only on the cloud deployment; unset locally),
 every call here goes to Groq's free-tier hosted API instead, an
 OpenAI-compatible endpoint. Agents never import ollama or call Groq's
-API directly - they only ever call chat() and is_available() here, and
+API directly - they only ever call chat()/reason() and is_available() here, and
 keep validating the returned JSON against their own Pydantic schema and
 raising LLMUnavailableError on failure exactly as before. Swapping
 backends changes where the words come from, not the contract agents
@@ -31,19 +31,6 @@ class LLMUnavailableError(Exception):
     """Raised when the active LLM backend can't be reached or returns unusable output."""
 
 
-def reasoning_available() -> bool:
-    """Whether reason()/reason_stream() can work AT ALL right now - only
-    the Ollama backend implements them (see reason()'s docstring), so
-    this is False whenever Groq is the active backend, independent of
-    is_available()'s narration-backend check below. Exists so callers
-    (the Fraud/Risk Agent's borderline-case button) can decide whether to
-    offer that feature at all, rather than showing it and having it fail
-    with an Ollama-specific troubleshooting message on the cloud
-    deployment - the exact class of bug ca5db49 already fixed once for
-    the upload page's "local LLM" banner claiming to be local on Render."""
-    return not GROQ_API_KEY
-
-
 def chat(messages: list[dict], schema: dict | None = None, temperature: float = 0.0) -> str:
     """Returns the model's raw reply text. `schema` is a Pydantic model's
     model_json_schema() - Ollama constrains decoding to it directly;
@@ -61,30 +48,33 @@ def reason(messages: list[dict], temperature: float = 0.0) -> dict:
     deliberation and its final answer as TWO SEPARATE strings - the whole
     point of a reasoning model versus chat()'s phi3.5/gpt-oss narration
     calls is that the chain-of-thought is a first-class, inspectable part
-    of the response (Ollama's `think` request field, `message.thinking` in
-    the reply), not something to scrape out of prose with a regex.
-
-    Only wired to the local Ollama path so far - Groq's reasoning models
-    (gpt-oss with reasoning_effort, or deepseek-r1-distill) are a
-    deliberate next step, not yet implemented here, so this raises
-    LLMUnavailableError on the cloud deployment (GROQ_API_KEY set) exactly
-    like any other unavailable call - callers already handle that."""
+    of the response, not something to scrape out of prose with a regex.
+    Locally that's Ollama's `think` request field (`message.thinking` in
+    the reply); on the cloud deployment it's Groq's `reasoning_format:
+    "parsed"` on the same gpt-oss model chat() already uses for narration
+    (`message.reasoning` in the reply) - gpt-oss is itself a genuine
+    reasoning model, just dialed down to fast/low-effort for narration
+    and up to high effort here. One fewer model to keep pulled/pinned on
+    the cloud side than pairing with a dedicated deepseek-r1-class model
+    the way the local Ollama path does."""
     if GROQ_API_KEY:
-        raise LLMUnavailableError("reason() is not yet wired to the Groq backend - Ollama only, for now.")
+        return _reason_groq(messages, temperature)
     return _reason_ollama(messages, temperature)
 
 
 def reason_stream(messages: list[dict], temperature: float = 0.0) -> Iterator[dict]:
     """Streaming counterpart to reason(). Yields {"type": "thinking"|"content",
-    "text": ...} dicts as Ollama emits them, rather than waiting for the
-    whole call to finish before returning anything - measured live at
+    "text": ...} dicts as the backend emits them, rather than waiting for
+    the whole call to finish before returning anything - measured live at
     3-6+ minutes for deepseek-r1:8b on a CPU-only laptop (see
-    fraud_risk_agent.deliberate_on_borderline_case's docstring), which is
-    long enough that "wait for the full response" is a genuinely different,
-    worse experience than chat_stream()'s narration case ever was. Ollama-
-    only, same restriction as reason() - see its docstring."""
+    fraud_risk_agent.deliberate_on_borderline_case's docstring). Groq's
+    LPU inference is dramatically faster for the same reasoning-effort
+    call, but this stays streamed either way rather than special-casing
+    the UX per backend - simpler, and still a genuinely nicer experience
+    for anyone watching either way."""
     if GROQ_API_KEY:
-        raise LLMUnavailableError("reason_stream() is not yet wired to the Groq backend - Ollama only, for now.")
+        yield from _reason_groq_stream(messages, temperature)
+        return
     yield from _reason_ollama_stream(messages, temperature)
 
 
@@ -238,6 +228,80 @@ def _chat_groq(messages: list[dict], schema: dict | None, temperature: float) ->
         # checking Groq's model list directly.
         body = getattr(getattr(e, "response", None), "text", "")
         logger.warning("Groq call failed (model=%s): %s %s", GROQ_MODEL, e, body[:300])
+        raise LLMUnavailableError(str(e)) from e
+
+
+def _reason_groq(messages: list[dict], temperature: float) -> dict:
+    import httpx
+
+    messages = [dict(m) for m in messages]  # copy - never mutate the caller's list
+    try:
+        resp = httpx.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            json={
+                "model": GROQ_MODEL,
+                "messages": messages,
+                "temperature": temperature,
+                # reasoning_effort dials the SAME gpt-oss model up to full
+                # deliberation (chat()/_chat_groq above calls it with no
+                # reasoning params at all - fast, narration-only).
+                # reasoning_format="parsed" is what puts the chain-of-
+                # thought in its own `message.reasoning` field instead of
+                # inline <think> tags in `content` - the Groq-side
+                # equivalent of Ollama's `think` request field/
+                # `message.thinking` response field above.
+                "reasoning_effort": "high",
+                "reasoning_format": "parsed",
+            },
+            timeout=90,
+        )
+        resp.raise_for_status()
+        message = resp.json()["choices"][0]["message"]
+        return {
+            "thinking": (message.get("reasoning") or "").strip(),
+            "content": (message.get("content") or "").strip(),
+        }
+    except Exception as e:
+        body = getattr(getattr(e, "response", None), "text", "")
+        logger.warning("Groq reasoning call failed (model=%s): %s %s", GROQ_MODEL, e, body[:300])
+        raise LLMUnavailableError(str(e)) from e
+
+
+def _reason_groq_stream(messages: list[dict], temperature: float) -> Iterator[dict]:
+    import httpx
+
+    messages = [dict(m) for m in messages]
+    try:
+        with httpx.stream(
+            "POST",
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            json={
+                "model": GROQ_MODEL,
+                "messages": messages,
+                "temperature": temperature,
+                "reasoning_effort": "high",
+                "reasoning_format": "parsed",
+                "stream": True,
+            },
+            timeout=90,
+        ) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if not line or not line.startswith("data: "):
+                    continue
+                payload = line[len("data: "):]
+                if payload.strip() == "[DONE]":
+                    break
+                delta = json.loads(payload)["choices"][0].get("delta", {})
+                if delta.get("reasoning"):
+                    yield {"type": "thinking", "text": delta["reasoning"]}
+                if delta.get("content"):
+                    yield {"type": "content", "text": delta["content"]}
+    except Exception as e:
+        body = getattr(getattr(e, "response", None), "text", "")
+        logger.warning("Groq reasoning stream failed (model=%s): %s %s", GROQ_MODEL, e, body[:300])
         raise LLMUnavailableError(str(e)) from e
 
 

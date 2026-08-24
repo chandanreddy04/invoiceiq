@@ -35,11 +35,9 @@
         <summary style="cursor:pointer; font-size:0.9em;">🧠 AI's borderline-case deliberation</summary>
         <p class="confidence" style="white-space:pre-wrap;">{{ fraud_flag.reasoning_trace }}</p>
     </details>
-    {% elif reasoning_available %}
-    <button type="button" id="borderline-review-btn" onclick="streamBorderlineReview({{ invoice.id }})" style="font-size:0.85em;">🧠 Get AI's second opinion (can take several minutes on a local model)</button>
-    <pre id="borderline-review-output" style="display:none; white-space:pre-wrap; font-family:inherit; margin-top:0.5rem;"></pre>
     {% else %}
-    <p class="confidence" style="margin:0;">🧠 AI second opinions aren't available on this deployment yet - only wired to a local Ollama backend so far.</p>
+    <button type="button" id="borderline-review-btn" onclick="streamBorderlineReview({{ invoice.id }})" style="font-size:0.85em;">🧠 Get AI's second opinion</button>
+    <pre id="borderline-review-output" style="display:none; white-space:pre-wrap; font-family:inherit; margin-top:0.5rem;"></pre>
     {% endif %}
 </div>
 <script>
@@ -49,11 +47,11 @@ function streamBorderlineReview(invoiceId) {
     out.style.display = "block";
     out.textContent = "";
     btn.disabled = true;
-    btn.textContent = "Thinking... (this genuinely takes minutes on a local CPU - the tab is safe to leave open)";
+    btn.textContent = "Thinking... (a local model can take several minutes; Groq is much faster - the tab is safe to leave open either way)";
     const source = new EventSource(`/web/invoices/${invoiceId}/borderline-review/stream`);
     source.onmessage = (event) => { out.textContent += event.data; };
     source.addEventListener("done", () => { source.close(); btn.textContent = "Done - reload the page to see it in the collapsed view above."; });
-    source.onerror = () => { source.close(); btn.disabled = false; btn.textContent = "🧠 Get AI's second opinion (can take several minutes on a local model)"; };
+    source.onerror = () => { source.close(); btn.disabled = false; btn.textContent = "🧠 Get AI's second opinion"; };
 }
 </script>
 {% endif %}
