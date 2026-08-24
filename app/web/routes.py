@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import UPLOAD_DIR, MAX_UPLOAD_SIZE_BYTES, MAX_UPLOAD_SIZE_MB, GROQ_API_KEY
 from app.utils.time import utcnow_naive
-from app.database.session import get_db
+from app.database.session import get_db, SessionLocal
 from app.models.models import (
     Invoice, Customer, Vendor, InvoiceDirection, PaymentStatus, InvoiceStatus,
     FraudFlag, AgentLog, Communication, ApprovalRequest, User, AuditLog, CreditNote,
@@ -650,10 +650,24 @@ def web_stream_borderline_review(invoice_id: int, db: Session = Depends(get_db),
     narration streamed above) instead of staring at a blank space for
     several minutes. Persists the finished trace onto the same FraudFlag
     row once streaming completes, same as the score/explanation it sits
-    alongside - so it survives a page reload instead of vanishing."""
+    alongside - so it survives a page reload instead of vanishing.
+
+    Uses a FRESH session (SessionLocal(), not the injected `db` above)
+    for that final write - a real gap found live: the request-scoped
+    `db` from Depends(get_db) is torn down as soon as this route
+    function returns, which happens immediately after constructing the
+    StreamingResponse, well before _generate() actually runs (it's only
+    invoked lazily as the client consumes the stream, which can take
+    several minutes). Writing through the already-closed `db` didn't
+    raise anything - `fraud_flag` was already detached from it, so
+    db.commit() silently committed an empty transaction - it just never
+    actually saved anything, discovered by checking the invoice page
+    after a real end-to-end run rather than trusting a clean SSE
+    "done" event as proof of success."""
     fraud_flag = (
         db.query(FraudFlag).filter(FraudFlag.invoice_id == invoice_id).order_by(FraudFlag.created_at.desc()).first()
     )
+    fraud_flag_id = fraud_flag.id if fraud_flag is not None else None
 
     def _generate():
         if fraud_flag is None:
@@ -683,8 +697,11 @@ def web_stream_borderline_review(invoice_id: int, db: Session = Depends(get_db),
                 yield "data: [reasoning model unavailable - is `ollama pull deepseek-r1:8b` done and `ollama serve` running?]\n\n"
             yield "event: done\ndata: \n\n"
             return
-        fraud_flag.reasoning_trace = "".join(thinking_so_far).strip()
-        db.commit()
+        with SessionLocal() as write_db:
+            flag = write_db.query(FraudFlag).filter(FraudFlag.id == fraud_flag_id).first()
+            if flag is not None:
+                flag.reasoning_trace = "".join(thinking_so_far).strip()
+                write_db.commit()
         yield "event: done\ndata: \n\n"
 
     return StreamingResponse(_generate(), media_type="text/event-stream")

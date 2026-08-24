@@ -90,7 +90,14 @@ def _reason_ollama_stream(messages: list[dict], temperature: float) -> Iterator[
                 "messages": messages,
                 "think": True,
                 "stream": True,
-                "options": {"temperature": temperature, "num_predict": 1536},
+                # repeat_penalty is the other real, live-found fix: without
+                # it, deepseek-r1:8b's chain-of-thought sometimes degenerates
+                # into looping the same few sentences ("But we can say X.
+                # But we cannot say Y.") instead of ever concluding - num_predict
+                # above only bounds how long that runs, it doesn't stop it
+                # from happening. 1.3 is a standard, moderate anti-repetition
+                # value (Ollama's default is 1.1).
+                "options": {"temperature": temperature, "num_predict": 1536, "repeat_penalty": 1.3},
             },
             timeout=480,
         ) as resp:
@@ -129,7 +136,14 @@ def _reason_ollama(messages: list[dict], temperature: float) -> dict:
                 # tokens before concluding. 1536 leaves enough room to
                 # actually finish, verified live (see
                 # scripts/reasoning_model_practice.py).
-                "options": {"temperature": temperature, "num_predict": 1536},
+                # repeat_penalty is the other real, live-found fix: without
+                # it, deepseek-r1:8b's chain-of-thought sometimes degenerates
+                # into looping the same few sentences ("But we can say X.
+                # But we cannot say Y.") instead of ever concluding - num_predict
+                # above only bounds how long that runs, it doesn't stop it
+                # from happening. 1.3 is a standard, moderate anti-repetition
+                # value (Ollama's default is 1.1).
+                "options": {"temperature": temperature, "num_predict": 1536, "repeat_penalty": 1.3},
             },
             # Reasoning models genuinely take longer than a one-shot chat
             # call - a deliberate tradeoff (see Fraud/Risk Agent's
@@ -253,6 +267,20 @@ def _reason_groq(messages: list[dict], temperature: float) -> dict:
                 # `message.thinking` response field above.
                 "reasoning_effort": "high",
                 "reasoning_format": "parsed",
+                # Found live: without a cap, one run degenerated into a
+                # repetitive loop ("But we cannot say X. But we can say Y.")
+                # for hundreds of lines before Groq's own limit cut it off -
+                # a real small-model failure mode, not a fluke of this
+                # project's prompt, and NOT backend-specific either (the
+                # same pattern showed up on the local Ollama path too - see
+                # repeat_penalty above). Bounding it here keeps worst-case
+                # latency/cost predictable, the same role num_predict plays
+                # for the Ollama path.
+                "max_completion_tokens": 2000,
+                # Groq's equivalent anti-repetition knob to Ollama's
+                # repeat_penalty above - same finding, same fix, different
+                # backend's parameter name.
+                "frequency_penalty": 0.4,
             },
             timeout=90,
         )
@@ -283,6 +311,8 @@ def _reason_groq_stream(messages: list[dict], temperature: float) -> Iterator[di
                 "temperature": temperature,
                 "reasoning_effort": "high",
                 "reasoning_format": "parsed",
+                "max_completion_tokens": 2000,
+                "frequency_penalty": 0.4,
                 "stream": True,
             },
             timeout=90,
