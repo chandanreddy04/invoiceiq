@@ -80,6 +80,11 @@ The Fraud/Risk Agent is the only caller today, and only for a real, narrow reaso
 
 Both backends wired: `reason()`/`reason_stream()` route to Ollama or Groq the same way `chat()` already does, based on whether `GROQ_API_KEY` is set - see `app/services/llm_client.py`'s `_reason_groq`/`_reason_groq_stream`.
 
+**Two real bugs this feature only surfaced by actually running it live, not by reasoning about the code:**
+
+1. **The trace silently never saved.** `web_stream_borderline_review()` wrote the finished trace through the request-scoped `db` session from `Depends(get_db)` - but that session is torn down as soon as the route function *returns*, which happens immediately after constructing the `StreamingResponse`, well before the generator that does the actual writing ever runs (it's only invoked lazily as the client consumes the stream, which can take minutes). Writing through the already-closed session didn't raise anything - the ORM object was already detached, so `db.commit()` silently committed an empty transaction. A clean SSE `done` event on the client was never proof the write actually happened; only reloading the page and checking for real was. Fixed by opening a fresh `SessionLocal()` inside the generator and re-fetching the row by id, rather than reusing the injected session.
+2. **The reasoning sometimes loops instead of concluding.** On both backends, independently, the chain-of-thought occasionally degenerates into repeating the same few sentences ("But we cannot say X. But we can say Y.") instead of ever reaching the requested `RECOMMENDATION:` line - reproduced via a raw `curl` capture of a live Groq stream, and separately via a real local Ollama/deepseek-r1 run. `num_predict`/`max_completion_tokens` alone only bound how long the garbage runs, not whether it happens - `repeat_penalty: 1.3` (Ollama) and `frequency_penalty: 0.4` (Groq) measurably reduced the exact-loop case, but even with that fix the model still doesn't reliably reach a clean concluding line within budget on every run - a real, measured, currently-unsolved limitation of a 20B-class model at this reasoning depth, reported here rather than left implicit in the code.
+
 ## Technology Stack
 
 | Layer | Choice | Why |
@@ -336,6 +341,7 @@ Real numbers from `python scripts/evaluate_agents.py`, run against the actual lo
 - Single-organization only; multi-tenant support would need `organization_id` scoping added to a few tables (e.g. `ApprovalRequest`) that currently assume one org.
 - JSON API has no authentication (web UI does) — see Security.
 - `datetime.utcnow()` deprecation was fixed project-wide (`app/utils/time.py`); two cosmetic library-level warnings remain (FastAPI's `on_event`, Starlette's `TemplateResponse` argument order) — functional on current versions, left as-is to avoid unnecessary framework-API churn.
+- The Fraud/Risk Agent's reasoning-model second opinion doesn't always converge to its requested one-line recommendation within its token budget on either backend, even after adding anti-repetition parameters — see [Reasoning models vs. chat models](#reasoning-models-vs-chat-models) for the measured details. The deliberation text itself is still shown either way; only the terse concluding line is unreliable.
 
 ## Future Work
 
