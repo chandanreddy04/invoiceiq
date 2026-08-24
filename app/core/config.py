@@ -42,14 +42,6 @@ if DATABASE_URL.startswith("postgres://"):
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "phi3.5")
 
-# A genuine reasoning-capable model (extended chain-of-thought via Ollama's
-# `think` request field), separate from OLLAMA_MODEL above - phi3.5 is a
-# fast one-shot chat model used for narration (turning an already-decided
-# verdict into a sentence); deepseek-r1 is used only where the deliberation
-# itself is the point (Fraud/Risk Agent's borderline-case review - see
-# app/agents/fraud_risk_agent.py). Run `ollama pull deepseek-r1:8b` once.
-OLLAMA_REASONING_MODEL = os.getenv("OLLAMA_REASONING_MODEL", "deepseek-r1:8b")
-
 # Render's free tier has no CPU/RAM budget to run even a 3.8B local model,
 # so the cloud deployment needs a different LLM backend than local dev
 # uses. Setting GROQ_API_KEY switches every agent (via app/services/

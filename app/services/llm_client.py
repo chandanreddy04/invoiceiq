@@ -8,7 +8,7 @@ deployment needs a different backend - not different agent code.
 When GROQ_API_KEY is set (only on the cloud deployment; unset locally),
 every call here goes to Groq's free-tier hosted API instead, an
 OpenAI-compatible endpoint. Agents never import ollama or call Groq's
-API directly - they only ever call chat()/reason() and is_available() here, and
+API directly - they only ever call chat() and is_available() here, and
 keep validating the returned JSON against their own Pydantic schema and
 raising LLMUnavailableError on failure exactly as before. Swapping
 backends changes where the words come from, not the contract agents
@@ -20,7 +20,7 @@ import logging
 import time
 from typing import Iterator
 
-from app.core.config import GROQ_API_KEY, GROQ_MODEL, OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_REASONING_MODEL
+from app.core.config import GROQ_API_KEY, GROQ_MODEL, OLLAMA_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -41,124 +41,6 @@ def chat(messages: list[dict], schema: dict | None = None, temperature: float = 
     if GROQ_API_KEY:
         return _chat_groq(messages, schema, temperature)
     return _chat_ollama(messages, schema, temperature)
-
-
-def reason(messages: list[dict], temperature: float = 0.0) -> dict:
-    """Calls a genuine reasoning-capable model and returns its extended
-    deliberation and its final answer as TWO SEPARATE strings - the whole
-    point of a reasoning model versus chat()'s phi3.5/gpt-oss narration
-    calls is that the chain-of-thought is a first-class, inspectable part
-    of the response, not something to scrape out of prose with a regex.
-    Locally that's Ollama's `think` request field (`message.thinking` in
-    the reply); on the cloud deployment it's Groq's `reasoning_format:
-    "parsed"` on the same gpt-oss model chat() already uses for narration
-    (`message.reasoning` in the reply) - gpt-oss is itself a genuine
-    reasoning model, just dialed down to fast/low-effort for narration
-    and up to high effort here. One fewer model to keep pulled/pinned on
-    the cloud side than pairing with a dedicated deepseek-r1-class model
-    the way the local Ollama path does."""
-    if GROQ_API_KEY:
-        return _reason_groq(messages, temperature)
-    return _reason_ollama(messages, temperature)
-
-
-def reason_stream(messages: list[dict], temperature: float = 0.0) -> Iterator[dict]:
-    """Streaming counterpart to reason(). Yields {"type": "thinking"|"content",
-    "text": ...} dicts as the backend emits them, rather than waiting for
-    the whole call to finish before returning anything - measured live at
-    3-6+ minutes for deepseek-r1:8b on a CPU-only laptop (see
-    fraud_risk_agent.deliberate_on_borderline_case's docstring). Groq's
-    LPU inference is dramatically faster for the same reasoning-effort
-    call, but this stays streamed either way rather than special-casing
-    the UX per backend - simpler, and still a genuinely nicer experience
-    for anyone watching either way."""
-    if GROQ_API_KEY:
-        yield from _reason_groq_stream(messages, temperature)
-        return
-    yield from _reason_ollama_stream(messages, temperature)
-
-
-def _reason_ollama_stream(messages: list[dict], temperature: float) -> Iterator[dict]:
-    import httpx
-
-    try:
-        with httpx.stream(
-            "POST",
-            f"{OLLAMA_HOST}/api/chat",
-            json={
-                "model": OLLAMA_REASONING_MODEL,
-                "messages": messages,
-                "think": True,
-                "stream": True,
-                # repeat_penalty is the other real, live-found fix: without
-                # it, deepseek-r1:8b's chain-of-thought sometimes degenerates
-                # into looping the same few sentences ("But we can say X.
-                # But we cannot say Y.") instead of ever concluding - num_predict
-                # above only bounds how long that runs, it doesn't stop it
-                # from happening. 1.3 is a standard, moderate anti-repetition
-                # value (Ollama's default is 1.1).
-                "options": {"temperature": temperature, "num_predict": 1536, "repeat_penalty": 1.3},
-            },
-            timeout=480,
-        ) as resp:
-            resp.raise_for_status()
-            for line in resp.iter_lines():
-                if not line:
-                    continue
-                message = json.loads(line).get("message", {})
-                if message.get("thinking"):
-                    yield {"type": "thinking", "text": message["thinking"]}
-                if message.get("content"):
-                    yield {"type": "content", "text": message["content"]}
-    except Exception as e:
-        raise LLMUnavailableError(str(e)) from e
-
-
-def _reason_ollama(messages: list[dict], temperature: float) -> dict:
-    import httpx
-
-    try:
-        resp = httpx.post(
-            f"{OLLAMA_HOST}/api/chat",
-            json={
-                "model": OLLAMA_REASONING_MODEL,
-                "messages": messages,
-                "think": True,
-                "stream": False,
-                # num_predict caps total output (thinking + final answer) -
-                # on a CPU-only laptop an unbounded reasoning model can
-                # ramble for a very long time before ever reaching its
-                # final answer; capping keeps a single deliberation call
-                # bounded instead of open-ended. Measured live at 800: the
-                # 8B model spent the ENTIRE budget mid-deliberation and
-                # never reached a final answer - deepseek-r1:8b's chain-of-
-                # thought on even a two-signal case regularly runs 700+
-                # tokens before concluding. 1536 leaves enough room to
-                # actually finish, verified live (see
-                # scripts/reasoning_model_practice.py).
-                # repeat_penalty is the other real, live-found fix: without
-                # it, deepseek-r1:8b's chain-of-thought sometimes degenerates
-                # into looping the same few sentences ("But we can say X.
-                # But we cannot say Y.") instead of ever concluding - num_predict
-                # above only bounds how long that runs, it doesn't stop it
-                # from happening. 1.3 is a standard, moderate anti-repetition
-                # value (Ollama's default is 1.1).
-                "options": {"temperature": temperature, "num_predict": 1536, "repeat_penalty": 1.3},
-            },
-            # Reasoning models genuinely take longer than a one-shot chat
-            # call - a deliberate tradeoff (see Fraud/Risk Agent's
-            # borderline-band gating, which exists specifically so this
-            # slower path only runs on the small slice of cases where it's
-            # worth the wait), not something to paper over with a short
-            # timeout that just fails the call instead. ~3 min/1000 tokens
-            # measured on a CPU-only laptop, so this leaves real headroom.
-            timeout=480,
-        )
-        resp.raise_for_status()
-        message = resp.json()["message"]
-        return {"thinking": message.get("thinking", "").strip(), "content": message.get("content", "").strip()}
-    except Exception as e:
-        raise LLMUnavailableError(str(e)) from e
 
 
 def chat_stream(messages: list[dict], temperature: float = 0.0) -> Iterator[str]:
@@ -242,96 +124,6 @@ def _chat_groq(messages: list[dict], schema: dict | None, temperature: float) ->
         # checking Groq's model list directly.
         body = getattr(getattr(e, "response", None), "text", "")
         logger.warning("Groq call failed (model=%s): %s %s", GROQ_MODEL, e, body[:300])
-        raise LLMUnavailableError(str(e)) from e
-
-
-def _reason_groq(messages: list[dict], temperature: float) -> dict:
-    import httpx
-
-    messages = [dict(m) for m in messages]  # copy - never mutate the caller's list
-    try:
-        resp = httpx.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            json={
-                "model": GROQ_MODEL,
-                "messages": messages,
-                "temperature": temperature,
-                # reasoning_effort dials the SAME gpt-oss model up to full
-                # deliberation (chat()/_chat_groq above calls it with no
-                # reasoning params at all - fast, narration-only).
-                # reasoning_format="parsed" is what puts the chain-of-
-                # thought in its own `message.reasoning` field instead of
-                # inline <think> tags in `content` - the Groq-side
-                # equivalent of Ollama's `think` request field/
-                # `message.thinking` response field above.
-                "reasoning_effort": "high",
-                "reasoning_format": "parsed",
-                # Found live: without a cap, one run degenerated into a
-                # repetitive loop ("But we cannot say X. But we can say Y.")
-                # for hundreds of lines before Groq's own limit cut it off -
-                # a real small-model failure mode, not a fluke of this
-                # project's prompt, and NOT backend-specific either (the
-                # same pattern showed up on the local Ollama path too - see
-                # repeat_penalty above). Bounding it here keeps worst-case
-                # latency/cost predictable, the same role num_predict plays
-                # for the Ollama path.
-                "max_completion_tokens": 2000,
-                # Groq's equivalent anti-repetition knob to Ollama's
-                # repeat_penalty above - same finding, same fix, different
-                # backend's parameter name.
-                "frequency_penalty": 0.4,
-            },
-            timeout=90,
-        )
-        resp.raise_for_status()
-        message = resp.json()["choices"][0]["message"]
-        return {
-            "thinking": (message.get("reasoning") or "").strip(),
-            "content": (message.get("content") or "").strip(),
-        }
-    except Exception as e:
-        body = getattr(getattr(e, "response", None), "text", "")
-        logger.warning("Groq reasoning call failed (model=%s): %s %s", GROQ_MODEL, e, body[:300])
-        raise LLMUnavailableError(str(e)) from e
-
-
-def _reason_groq_stream(messages: list[dict], temperature: float) -> Iterator[dict]:
-    import httpx
-
-    messages = [dict(m) for m in messages]
-    try:
-        with httpx.stream(
-            "POST",
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            json={
-                "model": GROQ_MODEL,
-                "messages": messages,
-                "temperature": temperature,
-                "reasoning_effort": "high",
-                "reasoning_format": "parsed",
-                "max_completion_tokens": 2000,
-                "frequency_penalty": 0.4,
-                "stream": True,
-            },
-            timeout=90,
-        ) as resp:
-            resp.raise_for_status()
-            for line in resp.iter_lines():
-                if not line or not line.startswith("data: "):
-                    continue
-                payload = line[len("data: "):]
-                if payload.strip() == "[DONE]":
-                    break
-                delta = json.loads(payload)["choices"][0].get("delta", {})
-                if delta.get("reasoning"):
-                    yield {"type": "thinking", "text": delta["reasoning"]}
-                if delta.get("content"):
-                    yield {"type": "content", "text": delta["content"]}
-    except Exception as e:
-        body = getattr(getattr(e, "response", None), "text", "")
-        logger.warning("Groq reasoning stream failed (model=%s): %s %s", GROQ_MODEL, e, body[:300])
         raise LLMUnavailableError(str(e)) from e
 
 

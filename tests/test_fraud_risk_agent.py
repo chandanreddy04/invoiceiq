@@ -15,13 +15,10 @@ since that would just be testing the same logic twice.
 from datetime import date, timedelta
 from decimal import Decimal
 
-from app.agents import fraud_risk_agent
 from app.agents.fraud_risk_agent import (
     score_risk, compute_risk_signals, get_party, find_parties_sharing_contact_info, HIGH_RISK_THRESHOLD,
-    BORDERLINE_BAND, deliberate_on_borderline_case, run_fraud_check,
 )
-from app.models.models import Invoice, InvoiceDirection, InvoiceStatus, PaymentStatus, Vendor, Customer, FraudFlag
-from app.services.llm_client import LLMUnavailableError
+from app.models.models import Invoice, InvoiceDirection, InvoiceStatus, PaymentStatus, Vendor, Customer
 from app.utils.time import utcnow_naive
 
 
@@ -339,89 +336,3 @@ def test_compute_risk_signals_org_baseline_never_mixes_incoming_and_outgoing(db_
     # If the $50,000 vendor invoice leaked into the baseline, this ratio
     # would be tiny (500 / ~25050) instead of 500/100 = 5.0.
     assert signals["amount_ratio"] == 5.0
-
-
-# --- Borderline-case reasoning-model deliberation: advisory only, never
-# a decision. See deliberate_on_borderline_case()'s own docstring for why
-# this split exists and BORDERLINE_BAND for why these particular scores. --
-
-def test_deliberate_skips_the_reasoning_call_entirely_outside_the_band(monkeypatch):
-    """Reasoning models are slow - the whole point of gating on
-    BORDERLINE_BAND is to never pay that cost on a clear-cut score.
-    Asserts the LLM is never even called, not just that its result is
-    discarded."""
-    def _must_not_be_called(*a, **kw):
-        raise AssertionError("reason() should not be called for a non-borderline score")
-    monkeypatch.setattr(fraud_risk_agent, "reason", _must_not_be_called)
-
-    assert deliberate_on_borderline_case(0.1, ["No anomalies detected."]) is None
-    assert deliberate_on_borderline_case(0.95, ["Everything is wrong."]) is None
-
-
-def test_deliberate_calls_the_reasoning_model_inside_the_band(monkeypatch):
-    captured = {}
-
-    def _fake_reason(messages, temperature=0.0):
-        captured["prompt"] = messages[0]["content"]
-        return {"thinking": "Weighing signal A against signal B...", "content": "RECOMMENDATION: closer look warranted"}
-
-    monkeypatch.setattr(fraud_risk_agent, "reason", _fake_reason)
-
-    mid_band_score = sum(BORDERLINE_BAND) / 2
-    result = deliberate_on_borderline_case(mid_band_score, ["Amount is 3.2x this vendor's average invoice."])
-    assert result["thinking"] == "Weighing signal A against signal B..."
-    assert "3.2x" in captured["prompt"]
-
-
-def test_deliberate_falls_back_to_none_when_llm_unavailable(monkeypatch):
-    def _raise(*a, **kw):
-        raise LLMUnavailableError("model not pulled")
-    monkeypatch.setattr(fraud_risk_agent, "reason", _raise)
-
-    assert deliberate_on_borderline_case(BORDERLINE_BAND[0] + 0.01, ["some reason"]) is None
-
-
-def test_deliberate_stream_yields_nothing_outside_the_band(monkeypatch):
-    """Same gating as the non-streaming version, for the function the web
-    route actually calls."""
-    def _must_not_be_called(*a, **kw):
-        raise AssertionError("reason_stream() should not be called for a non-borderline score")
-    monkeypatch.setattr(fraud_risk_agent, "reason_stream", _must_not_be_called)
-
-    assert list(fraud_risk_agent.deliberate_on_borderline_case_stream(0.1, ["No anomalies detected."])) == []
-    assert list(fraud_risk_agent.deliberate_on_borderline_case_stream(0.95, ["Everything is wrong."])) == []
-
-
-def test_run_fraud_check_never_calls_the_reasoning_model_or_stores_a_trace(db_session, org, vendor, monkeypatch):
-    """The real design decision this project's own measurements forced:
-    a live run against deepseek-r1:8b took 3-6+ minutes, so
-    run_fraud_check() (on the invoice-creation path) must never call the
-    reasoning model at all, regardless of score - that review only ever
-    happens on-demand via deliberate_on_borderline_case_stream(), from a
-    button a human clicks. Pins that down for every score band, not just
-    the borderline one, since a regression here would silently reintroduce
-    a multi-minute block on saving an invoice."""
-    monkeypatch.setattr(fraud_risk_agent, "explain_risk_with_llm", lambda *a, **kw: "mocked explanation")
-
-    def _must_not_be_called(*a, **kw):
-        raise AssertionError("run_fraud_check() must never call the reasoning model directly")
-    monkeypatch.setattr(fraud_risk_agent, "reason", _must_not_be_called)
-    monkeypatch.setattr(fraud_risk_agent, "reason_stream", _must_not_be_called)
-
-    def make_invoice(number):
-        invoice = Invoice(
-            organization_id=org.id, direction=InvoiceDirection.incoming, invoice_number=number,
-            vendor_id=vendor.id, invoice_date=date.today(), due_date=date.today() + timedelta(days=30),
-            subtotal=Decimal("100"), tax=Decimal("0"), discount=Decimal("0"), total=Decimal("100"),
-            payment_status=PaymentStatus.unpaid, invoice_status=InvoiceStatus.validated,
-        )
-        db_session.add(invoice)
-        db_session.commit()
-        db_session.refresh(invoice)
-        return invoice
-
-    for score in (0.1, sum(BORDERLINE_BAND) / 2, 0.95):
-        monkeypatch.setattr(fraud_risk_agent, "score_risk", lambda signals, s=score: (s, ["some reason"]))
-        flag = run_fraud_check(db_session, make_invoice(f"RT-{score}"))
-        assert flag.reasoning_trace is None
-        assert float(flag.risk_score) == score

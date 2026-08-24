@@ -30,7 +30,7 @@ Small businesses processing vendor and customer invoices by hand face slow manua
 
 - Create, upload, view, edit, and delete invoices (incoming/vendor and outgoing/customer)
 - PDF upload with automatic field + line-item extraction (local LLM, with a regex fallback if the model is unavailable)
-- Automatic fraud/risk scoring with plain-English, signal-by-signal explanations, plus an on-demand reasoning-model second opinion for genuinely borderline scores (advisory only - see [Reasoning models vs. chat models](#reasoning-models-vs-chat-models))
+- Automatic fraud/risk scoring with plain-English, signal-by-signal explanations
 - Automatic expense categorization
 - Automatic duplicate-invoice detection
 - Payment prioritization that holds back invoices already flagged as risky
@@ -59,7 +59,7 @@ Full Mermaid diagrams (system flow, ER diagram, approval sequence) are in [`docs
 | Agent | LLM does | Plain code does |
 |---|---|---|
 | **Extraction** | Reads unstructured PDF text → structured JSON (invoice fields + line items) | PDF text extraction (PyMuPDF), regex fallback, DB write |
-| **Fraud/Risk** | Turns already-computed risk signals into a readable explanation; for scores in a genuinely ambiguous band around the threshold, a *reasoning model* (deepseek-r1 locally, gpt-oss at high reasoning effort on Groq) deliberates a non-binding second opinion for the human approver | Computes the actual risk score (amount ratios, vendor age, invoice-number similarity) - the score and the pending_review gate are decided before either LLM call runs and neither can change them |
+| **Fraud/Risk** | Turns already-computed risk signals into a readable explanation | Computes the actual risk score (amount ratios, vendor age, invoice-number similarity) |
 | **Expense Classification** | Maps free-text line-item descriptions to a fixed category taxonomy | Confidence-threshold fallback to "Other" |
 | **Payment/AP** | Narrates the recommended payment order in plain English | Priority ranking, holding back risky invoices |
 | **Communication** | Writes the actual email text | Decides *which* situation applies (reminder vs. acknowledgement vs. cautious inquiry) — never the LLM's call |
@@ -67,23 +67,6 @@ Full Mermaid diagrams (system flow, ER diagram, approval sequence) are in [`docs
 | **Orchestrator** | (No direct LLM call) | Routes tasks, sequences agents, logs every step, dispatches to the approval queue |
 
 Deliberately **not** separate agents: Validation (pure arithmetic), Duplicate Detection (a tool/query), Compliance/Audit (structured logging).
-
-### Reasoning models vs. chat models
-
-Every other LLM call in this project (phi3.5/gpt-oss for extraction, narration, classification, drafting) is a one-shot chat completion - ask, get an answer. `app/services/llm_client.py` also exposes `reason()`/`reason_stream()`, which call a genuinely different kind of model: one trained to emit extended chain-of-thought *before* its final answer, with that deliberation exposed as a separate, inspectable field rather than something to scrape out of prose. Locally that's Ollama's `think` request parameter (`message.thinking` in the reply, deepseek-r1:8b); on the cloud deployment it's Groq's `reasoning_format: "parsed"` on the same gpt-oss model `chat()` already uses for narration (`message.reasoning` in the reply) - gpt-oss is itself a genuine reasoning model, just dialed down to fast/no-reasoning for narration and up to `reasoning_effort: "high"` here, rather than pulling in a second dedicated model on the cloud side.
-
-The Fraud/Risk Agent is the only caller today, and only for a real, narrow reason: `score_risk()` is a fixed numeric threshold, and this project's own evaluation (see [PROJECT_REPORT.md](PROJECT_REPORT.md)) documents a genuine failure mode where two moderate signals summing to just under that threshold get treated identically to a clean invoice. For scores landing in that ambiguous band (`BORDERLINE_BAND` in `app/agents/fraud_risk_agent.py`), a "🧠 Get AI's second opinion" button on the invoice page streams the reasoning model's live deliberation over the same signals and hands it to the human approver as a second opinion - shown as a collapsible block once done. It is advisory only: it can only ever run *after* `risk_score` and the `pending_review` gate are already decided, and nothing it returns is read back into that decision (pinned down by `tests/test_fraud_risk_agent.py::test_run_fraud_check_never_calls_the_reasoning_model_or_stores_a_trace`).
-
-**Deliberately NOT automatic**, and this is itself the most concrete lesson of the exercise: the first version called this synchronously from `run_fraud_check()` on every borderline invoice. Actually running it against deepseek-r1:8b (not assuming it would be fast) measured 3-6+ minutes per call on a CPU-only laptop - even `num_predict=1536` wasn't always enough for the model to reach a concluding line (see the real captured output in `reasoning_model_practice.py`'s own comments/history). Blocking invoice creation on that for a review step that's advisory to begin with would have been a real regression, not a reasonable tradeoff - so it's on-demand and streamed instead, on both backends, even though Groq's LPU inference is dramatically faster for the same reasoning-effort call than a CPU-only laptop ever is. Exactly the kind of rules-vs-judgment latency/cost tradeoff real fraud teams weigh, not just a demo of "add a bigger model."
-
-`scripts/reasoning_model_practice.py` runs the same real borderline signal set through both phi3.5 (narration) and deepseek-r1 (deliberation) side by side, to make the API-level difference (a separate `thinking` field vs. none) - and the latency difference - something you can actually see. Requires `ollama pull deepseek-r1:8b` (see `.env.example`'s `OLLAMA_REASONING_MODEL`) - optional locally; the rest of the app works identically without it, this review step is just skipped. On the cloud deployment `GROQ_API_KEY` alone is enough - no separate reasoning-model setup, since it reuses `GROQ_MODEL`.
-
-Both backends wired: `reason()`/`reason_stream()` route to Ollama or Groq the same way `chat()` already does, based on whether `GROQ_API_KEY` is set - see `app/services/llm_client.py`'s `_reason_groq`/`_reason_groq_stream`.
-
-**Two real bugs this feature only surfaced by actually running it live, not by reasoning about the code:**
-
-1. **The trace silently never saved.** `web_stream_borderline_review()` wrote the finished trace through the request-scoped `db` session from `Depends(get_db)` - but that session is torn down as soon as the route function *returns*, which happens immediately after constructing the `StreamingResponse`, well before the generator that does the actual writing ever runs (it's only invoked lazily as the client consumes the stream, which can take minutes). Writing through the already-closed session didn't raise anything - the ORM object was already detached, so `db.commit()` silently committed an empty transaction. A clean SSE `done` event on the client was never proof the write actually happened; only reloading the page and checking for real was. Fixed by opening a fresh `SessionLocal()` inside the generator and re-fetching the row by id, rather than reusing the injected session.
-2. **The reasoning sometimes loops instead of concluding.** On both backends, independently, the chain-of-thought occasionally degenerates into repeating the same few sentences ("But we cannot say X. But we can say Y.") instead of ever reaching the requested `RECOMMENDATION:` line - reproduced via a raw `curl` capture of a live Groq stream, and separately via a real local Ollama/deepseek-r1 run. `num_predict`/`max_completion_tokens` alone only bound how long the garbage runs, not whether it happens - `repeat_penalty: 1.3` (Ollama) and `frequency_penalty: 0.4` (Groq) measurably reduced the exact-loop case, but even with that fix the model still doesn't reliably reach a clean concluding line within budget on every run - a real, measured, currently-unsolved limitation of a 20B-class model at this reasoning depth, reported here rather than left implicit in the code.
 
 ## Technology Stack
 
@@ -125,7 +108,6 @@ scripts/
 ├── seed_demo_data.py           Organization, customers, vendors, demo login users
 ├── generate_synthetic_data.py    ~9 varied invoices exercising every agent
 ├── generate_sample_invoices.py     3 sample PDFs for manually testing upload
-├── reasoning_model_practice.py       phi3.5 (narration) vs. deepseek-r1 (deliberation) on the same case
 ├── smoke_test.py                     Post-install environment verification
 └── evaluate_agents.py                 Real measured agent accuracy numbers
 tests/                    95 tests (86 fast + 4 real-LLM + 5 real-browser/e2e)
@@ -341,7 +323,6 @@ Real numbers from `python scripts/evaluate_agents.py`, run against the actual lo
 - Single-organization only; multi-tenant support would need `organization_id` scoping added to a few tables (e.g. `ApprovalRequest`) that currently assume one org.
 - JSON API has no authentication (web UI does) — see Security.
 - `datetime.utcnow()` deprecation was fixed project-wide (`app/utils/time.py`); two cosmetic library-level warnings remain (FastAPI's `on_event`, Starlette's `TemplateResponse` argument order) — functional on current versions, left as-is to avoid unnecessary framework-API churn.
-- The Fraud/Risk Agent's reasoning-model second opinion doesn't always converge to its requested one-line recommendation within its token budget on either backend, even after adding anti-repetition parameters — see [Reasoning models vs. chat models](#reasoning-models-vs-chat-models) for the measured details. The deliberation text itself is still shown either way; only the terse concluding line is unreliable.
 
 ## Future Work
 

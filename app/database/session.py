@@ -43,7 +43,6 @@ _MIGRATIONS = [
     ("customers", "created_at", "TIMESTAMP"),
     ("invoices", "public_token", "VARCHAR(64)"),
     ("vendors", "tax_id", "VARCHAR(50)"),
-    ("fraud_flags", "reasoning_trace", "TEXT"),
 ]
 
 # Separate from _MIGRATIONS above because a plain ADD COLUMN never

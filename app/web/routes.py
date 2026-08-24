@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import UPLOAD_DIR, MAX_UPLOAD_SIZE_BYTES, MAX_UPLOAD_SIZE_MB, GROQ_API_KEY
 from app.utils.time import utcnow_naive
-from app.database.session import get_db, SessionLocal
+from app.database.session import get_db
 from app.models.models import (
     Invoice, Customer, Vendor, InvoiceDirection, PaymentStatus, InvoiceStatus,
     FraudFlag, AgentLog, Communication, ApprovalRequest, User, AuditLog, CreditNote,
@@ -632,76 +632,6 @@ def web_stream_risk_explanation(invoice_id: int, db: Session = Depends(get_db), 
                 yield f"data: {chunk.replace(chr(10), ' ')}\n\n"
         except llm_extraction_service.LLMUnavailableError:
             yield f"data: [LLM unavailable] {' '.join(reasons)}\n\n"
-        yield "event: done\ndata: \n\n"
-
-    return StreamingResponse(_generate(), media_type="text/event-stream")
-
-
-@router.get("/invoices/{invoice_id}/borderline-review/stream")
-def web_stream_borderline_review(invoice_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
-    """SSE endpoint for the Fraud/Risk Agent's on-demand reasoning-model
-    second opinion (app.agents.fraud_risk_agent.deliberate_on_borderline_case_stream).
-    Deliberately NOT run automatically on invoice creation or from
-    run_fraud_check() - measured live at 3-6+ minutes on a CPU-only
-    laptop for deepseek-r1:8b, an unacceptable block on saving an invoice
-    for a review step that's advisory only to begin with. Streaming lets
-    a person who clicks "Get AI's second opinion" watch the model think
-    in real time (a genuine, visible difference from the fast one-shot
-    narration streamed above) instead of staring at a blank space for
-    several minutes. Persists the finished trace onto the same FraudFlag
-    row once streaming completes, same as the score/explanation it sits
-    alongside - so it survives a page reload instead of vanishing.
-
-    Uses a FRESH session (SessionLocal(), not the injected `db` above)
-    for that final write - a real gap found live: the request-scoped
-    `db` from Depends(get_db) is torn down as soon as this route
-    function returns, which happens immediately after constructing the
-    StreamingResponse, well before _generate() actually runs (it's only
-    invoked lazily as the client consumes the stream, which can take
-    several minutes). Writing through the already-closed `db` didn't
-    raise anything - `fraud_flag` was already detached from it, so
-    db.commit() silently committed an empty transaction - it just never
-    actually saved anything, discovered by checking the invoice page
-    after a real end-to-end run rather than trusting a clean SSE
-    "done" event as proof of success."""
-    fraud_flag = (
-        db.query(FraudFlag).filter(FraudFlag.invoice_id == invoice_id).order_by(FraudFlag.created_at.desc()).first()
-    )
-    fraud_flag_id = fraud_flag.id if fraud_flag is not None else None
-
-    def _generate():
-        if fraud_flag is None:
-            yield "data: No risk assessment exists for this invoice.\n\n"
-            yield "event: done\ndata: \n\n"
-            return
-        risk_score = float(fraud_flag.risk_score)
-        if not (fraud_risk_agent.BORDERLINE_BAND[0] <= risk_score <= fraud_risk_agent.BORDERLINE_BAND[1]):
-            yield "data: This invoice's score isn't in the ambiguous band - no second opinion to give.\n\n"
-            yield "event: done\ndata: \n\n"
-            return
-        reasons = json.loads(fraud_flag.reasons_json) if fraud_flag.reasons_json else []
-        thinking_so_far = []
-        try:
-            for chunk in fraud_risk_agent.deliberate_on_borderline_case_stream(risk_score, reasons):
-                if chunk["type"] == "thinking":
-                    thinking_so_far.append(chunk["text"])
-                    yield f"data: {chunk['text'].replace(chr(10), ' ')}\n\n"
-        except llm_extraction_service.LLMUnavailableError:
-            # Backend-specific troubleshooting, same idea as the narration
-            # stream's fallback above - a bad/missing GROQ_API_KEY and a
-            # not-running local Ollama fail the same way from the caller's
-            # side (LLMUnavailableError), but the fix looks nothing alike.
-            if GROQ_API_KEY:
-                yield "data: [reasoning model unavailable - check GROQ_API_KEY and Groq's status]\n\n"
-            else:
-                yield "data: [reasoning model unavailable - is `ollama pull deepseek-r1:8b` done and `ollama serve` running?]\n\n"
-            yield "event: done\ndata: \n\n"
-            return
-        with SessionLocal() as write_db:
-            flag = write_db.query(FraudFlag).filter(FraudFlag.id == fraud_flag_id).first()
-            if flag is not None:
-                flag.reasoning_trace = "".join(thinking_so_far).strip()
-                write_db.commit()
         yield "event: done\ndata: \n\n"
 
     return StreamingResponse(_generate(), media_type="text/event-stream")
