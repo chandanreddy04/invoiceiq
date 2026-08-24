@@ -37,6 +37,9 @@
 </table>
 {% else %}
 <p>No invoices from this vendor yet.</p>
+<form method="post" action="/web/vendors/{{ vendor.id }}/delete" onsubmit="return confirm('Delete {{ vendor.name }}? This cannot be undone.');" style="margin-top:0.5rem;">
+    <button type="submit" class="secondary">🗑️ Delete this vendor</button>
+</form>
 {% endif %}
 <p style="margin-top:1.5rem;"><a href="/web/vendors" class="btn secondary">← All vendors</a></p>
 {% endblock %}

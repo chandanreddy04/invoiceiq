@@ -1234,3 +1234,67 @@ def test_standalone_upload_page_no_longer_exists(client):
     _login(client, OWNER_EMAIL, OWNER_PASSWORD)
     assert client.get("/web/upload").status_code == 404
     assert client.post("/web/upload/confirm", data={}).status_code == 404
+
+
+def test_delete_vendor_with_no_invoices_succeeds(client):
+    """Real gap found live: a vendor/customer accumulated purely from
+    testing had no way to be removed at all - only invoices had a
+    delete route. Guarded to only allow this when the record has zero
+    invoices, since Invoice.vendor_id has no ON DELETE behavior."""
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    create_resp = client.post(
+        "/web/vendors", data={"name": "Throwaway Vendor", "email": "", "address": "", "tax_id": ""},
+        follow_redirects=False,
+    )
+    assert create_resp.status_code == 303
+
+    db = client.session_factory()
+    vendor = db.query(Vendor).filter(Vendor.name == "Throwaway Vendor").first()
+    vendor_id = vendor.id
+    db.close()
+
+    del_resp = client.post(f"/web/vendors/{vendor_id}/delete", follow_redirects=False)
+    assert del_resp.status_code == 303
+    assert del_resp.headers["location"] == "/web/vendors"
+
+    db = client.session_factory()
+    assert db.get(Vendor, vendor_id) is None
+    db.close()
+
+
+def test_delete_vendor_with_invoices_is_refused(client):
+    payload = {
+        "direction": "incoming", "invoice_number": "KEEP-ME-1", "vendor_id": 1,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "Item A", "quantity": 1, "unit_price": 10}],
+    }
+    assert client.post("/invoices", json=payload).status_code == 201
+
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    del_resp = client.post("/web/vendors/1/delete", follow_redirects=False)
+    assert del_resp.status_code == 303  # redirects either way - no error page, just a silent no-op
+
+    db = client.session_factory()
+    assert db.get(Vendor, 1) is not None  # still there - the invoice above blocked it
+    db.close()
+
+
+def test_delete_customer_with_no_invoices_succeeds(client):
+    from app.models.models import Customer
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    create_resp = client.post(
+        "/web/customers", data={"name": "Throwaway Customer", "email": "", "address": ""}, follow_redirects=False,
+    )
+    assert create_resp.status_code == 303
+
+    db = client.session_factory()
+    customer = db.query(Customer).filter(Customer.name == "Throwaway Customer").first()
+    customer_id = customer.id
+    db.close()
+
+    del_resp = client.post(f"/web/customers/{customer_id}/delete", follow_redirects=False)
+    assert del_resp.status_code == 303
+
+    db = client.session_factory()
+    assert db.get(Customer, customer_id) is None
+    db.close()

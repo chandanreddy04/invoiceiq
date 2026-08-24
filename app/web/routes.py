@@ -1016,6 +1016,25 @@ def web_vendor_detail(vendor_id: int, request: Request, db: Session = Depends(ge
     })
 
 
+@router.post("/vendors/{vendor_id}/delete")
+def web_delete_vendor(vendor_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    """Guarded: only deletes when this vendor has zero invoices. Invoice.vendor_id
+    has no ON DELETE behavior configured, so deleting a vendor with real invoice
+    history would orphan those rows - the same class of gap 0a5aa82 already fixed
+    once for invoice deletion itself. The only real use case is a vendor record
+    accumulated purely from testing/exploration that never actually got used on
+    an invoice; vendor_detail.html only renders this button in that same case,
+    so this check is a backstop, not the only thing standing between a user and
+    a bad delete."""
+    vendor = db.query(Vendor).filter(Vendor.id == vendor_id, Vendor.organization_id == DEFAULT_ORG_ID).first()
+    if vendor is not None and not vendor.invoices:
+        name = vendor.name
+        db.delete(vendor)
+        db.commit()
+        _audit(db, "vendor", vendor_id, "delete", current_user.email, {"name": name})
+    return RedirectResponse("/web/vendors", status_code=303)
+
+
 @router.get("/customers", response_class=HTMLResponse)
 def web_list_customers(request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
     customers = db.query(Customer).filter(Customer.organization_id == DEFAULT_ORG_ID).order_by(Customer.name).all()
@@ -1046,6 +1065,18 @@ def web_customer_detail(customer_id: int, request: Request, db: Session = Depend
         "request": request, "customer": customer, "invoices": invoices, "total_billed": total_billed,
         "current_user": current_user,
     })
+
+
+@router.post("/customers/{customer_id}/delete")
+def web_delete_customer(customer_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    """Same guard as web_delete_vendor above, mirrored for Customer."""
+    customer = db.query(Customer).filter(Customer.id == customer_id, Customer.organization_id == DEFAULT_ORG_ID).first()
+    if customer is not None and not customer.invoices:
+        name = customer.name
+        db.delete(customer)
+        db.commit()
+        _audit(db, "customer", customer_id, "delete", current_user.email, {"name": name})
+    return RedirectResponse("/web/customers", status_code=303)
 
 
 # --- (Upload/extraction now lives inline on the New Invoice page - see

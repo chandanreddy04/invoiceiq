@@ -31,6 +31,9 @@
 </table>
 {% else %}
 <p>No invoices to this customer yet.</p>
+<form method="post" action="/web/customers/{{ customer.id }}/delete" onsubmit="return confirm('Delete {{ customer.name }}? This cannot be undone.');" style="margin-top:0.5rem;">
+    <button type="submit" class="secondary">🗑️ Delete this customer</button>
+</form>
 {% endif %}
 <p style="margin-top:1.5rem;"><a href="/web/customers" class="btn secondary">← All customers</a></p>
 {% endblock %}
