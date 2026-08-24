@@ -30,7 +30,7 @@ Small businesses processing vendor and customer invoices by hand face slow manua
 
 - Create, upload, view, edit, and delete invoices (incoming/vendor and outgoing/customer)
 - PDF upload with automatic field + line-item extraction (local LLM, with a regex fallback if the model is unavailable)
-- Automatic fraud/risk scoring with plain-English, signal-by-signal explanations
+- Automatic fraud/risk scoring with plain-English, signal-by-signal explanations, plus an on-demand reasoning-model second opinion for genuinely borderline scores (advisory only - see [Reasoning models vs. chat models](#reasoning-models-vs-chat-models))
 - Automatic expense categorization
 - Automatic duplicate-invoice detection
 - Payment prioritization that holds back invoices already flagged as risky
@@ -59,7 +59,7 @@ Full Mermaid diagrams (system flow, ER diagram, approval sequence) are in [`docs
 | Agent | LLM does | Plain code does |
 |---|---|---|
 | **Extraction** | Reads unstructured PDF text → structured JSON (invoice fields + line items) | PDF text extraction (PyMuPDF), regex fallback, DB write |
-| **Fraud/Risk** | Turns already-computed risk signals into a readable explanation | Computes the actual risk score (amount ratios, vendor age, invoice-number similarity) |
+| **Fraud/Risk** | Turns already-computed risk signals into a readable explanation; for scores in a genuinely ambiguous band around the threshold, a *reasoning model* (deepseek-r1, extended chain-of-thought) deliberates a non-binding second opinion for the human approver | Computes the actual risk score (amount ratios, vendor age, invoice-number similarity) - the score and the pending_review gate are decided before either LLM call runs and neither can change them |
 | **Expense Classification** | Maps free-text line-item descriptions to a fixed category taxonomy | Confidence-threshold fallback to "Other" |
 | **Payment/AP** | Narrates the recommended payment order in plain English | Priority ranking, holding back risky invoices |
 | **Communication** | Writes the actual email text | Decides *which* situation applies (reminder vs. acknowledgement vs. cautious inquiry) — never the LLM's call |
@@ -67,6 +67,18 @@ Full Mermaid diagrams (system flow, ER diagram, approval sequence) are in [`docs
 | **Orchestrator** | (No direct LLM call) | Routes tasks, sequences agents, logs every step, dispatches to the approval queue |
 
 Deliberately **not** separate agents: Validation (pure arithmetic), Duplicate Detection (a tool/query), Compliance/Audit (structured logging).
+
+### Reasoning models vs. chat models
+
+Every other LLM call in this project (phi3.5/gpt-oss for extraction, narration, classification, drafting) is a one-shot chat completion - ask, get an answer. `app/services/llm_client.py` also exposes `reason()`, which calls a genuinely different kind of model: one trained to emit extended chain-of-thought *before* its final answer, with that deliberation exposed as a separate, inspectable field (Ollama's `think` request parameter → `message.thinking`) rather than something to scrape out of prose.
+
+The Fraud/Risk Agent is the only caller today, and only for a real, narrow reason: `score_risk()` is a fixed numeric threshold, and this project's own evaluation (see [PROJECT_REPORT.md](PROJECT_REPORT.md)) documents a genuine failure mode where two moderate signals summing to just under that threshold get treated identically to a clean invoice. For scores landing in that ambiguous band (`BORDERLINE_BAND` in `app/agents/fraud_risk_agent.py`), a "🧠 Get AI's second opinion" button on the invoice page streams deepseek-r1's live deliberation over the same signals and hands it to the human approver as a second opinion - shown as a collapsible block once done. It is advisory only: it can only ever run *after* `risk_score` and the `pending_review` gate are already decided, and nothing it returns is read back into that decision (pinned down by `tests/test_fraud_risk_agent.py::test_run_fraud_check_never_calls_the_reasoning_model_or_stores_a_trace`).
+
+**Deliberately NOT automatic**, and this is itself the most concrete lesson of the exercise: the first version called this synchronously from `run_fraud_check()` on every borderline invoice. Actually running it against deepseek-r1:8b (not assuming it would be fast) measured 3-6+ minutes per call on a CPU-only laptop - even `num_predict=1536` wasn't always enough for the model to reach a concluding line (see the real captured output in `reasoning_model_practice.py`'s own comments/history). Blocking invoice creation on that for a review step that's advisory to begin with would have been a real regression, not a reasonable tradeoff - so it's on-demand and streamed instead, exactly the kind of rules-vs-judgment latency/cost tradeoff real fraud teams weigh, not just a demo of "add a bigger model."
+
+`scripts/reasoning_model_practice.py` runs the same real borderline signal set through both phi3.5 (narration) and deepseek-r1 (deliberation) side by side, to make the API-level difference (a separate `thinking` field vs. none) - and the latency difference - something you can actually see. Requires `ollama pull deepseek-r1:8b` (see `.env.example`'s `OLLAMA_REASONING_MODEL`) - optional; the rest of the app works identically without it, this review step is just skipped.
+
+Only wired to the local Ollama path so far. A Groq-backed reasoning model (`gpt-oss` with `reasoning_effort`, or `deepseek-r1-distill-llama-70b`) for the cloud deployment is a deliberate next step, not yet implemented - `reason()` raises the same `LLMUnavailableError` on the cloud deployment today that any other unavailable call would.
 
 ## Technology Stack
 
@@ -108,6 +120,7 @@ scripts/
 ├── seed_demo_data.py           Organization, customers, vendors, demo login users
 ├── generate_synthetic_data.py    ~9 varied invoices exercising every agent
 ├── generate_sample_invoices.py     3 sample PDFs for manually testing upload
+├── reasoning_model_practice.py       phi3.5 (narration) vs. deepseek-r1 (deliberation) on the same case
 ├── smoke_test.py                     Post-install environment verification
 └── evaluate_agents.py                 Real measured agent accuracy numbers
 tests/                    95 tests (86 fast + 4 real-LLM + 5 real-browser/e2e)

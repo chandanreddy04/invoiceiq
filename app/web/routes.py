@@ -637,6 +637,52 @@ def web_stream_risk_explanation(invoice_id: int, db: Session = Depends(get_db), 
     return StreamingResponse(_generate(), media_type="text/event-stream")
 
 
+@router.get("/invoices/{invoice_id}/borderline-review/stream")
+def web_stream_borderline_review(invoice_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    """SSE endpoint for the Fraud/Risk Agent's on-demand reasoning-model
+    second opinion (app.agents.fraud_risk_agent.deliberate_on_borderline_case_stream).
+    Deliberately NOT run automatically on invoice creation or from
+    run_fraud_check() - measured live at 3-6+ minutes on a CPU-only
+    laptop for deepseek-r1:8b, an unacceptable block on saving an invoice
+    for a review step that's advisory only to begin with. Streaming lets
+    a person who clicks "Get AI's second opinion" watch the model think
+    in real time (a genuine, visible difference from the fast one-shot
+    narration streamed above) instead of staring at a blank space for
+    several minutes. Persists the finished trace onto the same FraudFlag
+    row once streaming completes, same as the score/explanation it sits
+    alongside - so it survives a page reload instead of vanishing."""
+    fraud_flag = (
+        db.query(FraudFlag).filter(FraudFlag.invoice_id == invoice_id).order_by(FraudFlag.created_at.desc()).first()
+    )
+
+    def _generate():
+        if fraud_flag is None:
+            yield "data: No risk assessment exists for this invoice.\n\n"
+            yield "event: done\ndata: \n\n"
+            return
+        risk_score = float(fraud_flag.risk_score)
+        if not (fraud_risk_agent.BORDERLINE_BAND[0] <= risk_score <= fraud_risk_agent.BORDERLINE_BAND[1]):
+            yield "data: This invoice's score isn't in the ambiguous band - no second opinion to give.\n\n"
+            yield "event: done\ndata: \n\n"
+            return
+        reasons = json.loads(fraud_flag.reasons_json) if fraud_flag.reasons_json else []
+        thinking_so_far = []
+        try:
+            for chunk in fraud_risk_agent.deliberate_on_borderline_case_stream(risk_score, reasons):
+                if chunk["type"] == "thinking":
+                    thinking_so_far.append(chunk["text"])
+                    yield f"data: {chunk['text'].replace(chr(10), ' ')}\n\n"
+        except llm_extraction_service.LLMUnavailableError:
+            yield "data: [reasoning model unavailable - is `ollama pull deepseek-r1:8b` done and `ollama serve` running?]\n\n"
+            yield "event: done\ndata: \n\n"
+            return
+        fraud_flag.reasoning_trace = "".join(thinking_so_far).strip()
+        db.commit()
+        yield "event: done\ndata: \n\n"
+
+    return StreamingResponse(_generate(), media_type="text/event-stream")
+
+
 @router.post("/invoices/{invoice_id}", response_class=HTMLResponse)
 async def web_update_invoice(invoice_id: int, request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
     form = await request.form()

@@ -26,6 +26,35 @@
     <br><span id="risk-explanation">{{ fraud_flag.explanation }}</span>
     <br><button type="button" id="regen-risk-btn" onclick="streamRiskExplanation({{ invoice.id }})" style="margin-top:0.5rem;font-size:0.85em;">🔄 Regenerate explanation (live)</button>
 </div>
+{% set risk_float = fraud_flag.risk_score|float %}
+{% if risk_float >= 0.55 and risk_float <= 0.85 %}
+<div style="margin-top:-0.5rem; margin-bottom:1.5rem; border:1px solid #ddd; border-radius:6px; padding:0.75rem 1rem;">
+    <p class="confidence" style="margin:0 0 0.5rem 0;">This score falls in a genuinely ambiguous band - a reasoning model (deepseek-r1) can weigh these signals in more depth as a <em>second opinion for you to read</em>. It never changes the score above.</p>
+    {% if fraud_flag.reasoning_trace %}
+    <details>
+        <summary style="cursor:pointer; font-size:0.9em;">🧠 AI's borderline-case deliberation</summary>
+        <p class="confidence" style="white-space:pre-wrap;">{{ fraud_flag.reasoning_trace }}</p>
+    </details>
+    {% else %}
+    <button type="button" id="borderline-review-btn" onclick="streamBorderlineReview({{ invoice.id }})" style="font-size:0.85em;">🧠 Get AI's second opinion (can take several minutes on a local model)</button>
+    <pre id="borderline-review-output" style="display:none; white-space:pre-wrap; font-family:inherit; margin-top:0.5rem;"></pre>
+    {% endif %}
+</div>
+<script>
+function streamBorderlineReview(invoiceId) {
+    const btn = document.getElementById("borderline-review-btn");
+    const out = document.getElementById("borderline-review-output");
+    out.style.display = "block";
+    out.textContent = "";
+    btn.disabled = true;
+    btn.textContent = "Thinking... (this genuinely takes minutes on a local CPU - the tab is safe to leave open)";
+    const source = new EventSource(`/web/invoices/${invoiceId}/borderline-review/stream`);
+    source.onmessage = (event) => { out.textContent += event.data; };
+    source.addEventListener("done", () => { source.close(); btn.textContent = "Done - reload the page to see it in the collapsed view above."; });
+    source.onerror = () => { source.close(); btn.disabled = false; btn.textContent = "🧠 Get AI's second opinion (can take several minutes on a local model)"; };
+}
+</script>
+{% endif %}
 <script>
 function streamRiskExplanation(invoiceId) {
     const el = document.getElementById("risk-explanation");

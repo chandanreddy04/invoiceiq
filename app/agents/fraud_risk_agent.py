@@ -27,11 +27,30 @@ Walking through the layers from the Section 5 design:
                         Ratios, date math, string similarity - no LLM call
                         anywhere in here. This is the part that actually
                         decides how risky the invoice is.
-  LLM LAYER           -> explain_risk_with_llm(): the ONLY place an LLM is
-                        used, and only to turn already-computed numbers into
-                        a readable sentence. If this call fails, the agent
+  LLM LAYER           -> explain_risk_with_llm(): turns the already-computed
+                        score/reasons into a readable sentence - never
+                        decides anything. If this call fails, the agent
                         still works - it just falls back to the raw reasons
                         list (Section 38 failure handling).
+                          A second, separate LLM call exists only for
+                        genuinely borderline scores (BORDERLINE_BAND):
+                        deliberate_on_borderline_case_stream() asks a real
+                        reasoning model (extended chain-of-thought, not a
+                        one-shot chat model) to weigh the same signals and
+                        hand a human approver its deliberation as a second
+                        opinion. This is still advisory, not a decision -
+                        it can only ever run AFTER risk_score/pending_review
+                        are already fixed (nothing it produces is read back
+                        into this function) and is never called from here
+                        at all: it's on-demand only, from a "Get AI's second
+                        opinion" button, because a real measured run against
+                        deepseek-r1:8b on a CPU-only laptop took 3-6+
+                        minutes - an unacceptable block on saving an
+                        invoice for a step that's advisory in the first
+                        place. The distinction this project draws isn't
+                        "LLM never touches judgment calls" - it's "an LLM's
+                        judgment is surfaced to a human, never substituted
+                        for one, on anything financially consequential."
   ACTION LAYER        -> run_fraud_check(): writes a FraudFlag row and, if
                         risk is high, forces the invoice into pending_review
                         instead of validated.
@@ -53,11 +72,22 @@ from sqlalchemy.orm import Session
 
 from app.models.models import Invoice, Vendor, Customer, FraudFlag, InvoiceStatus, ApprovalRequest
 from app.utils.time import utcnow_naive
-from app.services.llm_client import LLMUnavailableError, chat
+from app.services.llm_client import LLMUnavailableError, chat, reason, reason_stream
 
 logger = logging.getLogger(__name__)
 
 HIGH_RISK_THRESHOLD = 0.7
+
+# A genuinely ambiguous band around the threshold - not "anything below
+# 0.7 is fine, anything above isn't." PROJECT_REPORT.md documents a real
+# failure mode: two moderate signals summing to just under 0.7 scores as
+# "no anomalies" with no nuance, the same as a truly clean invoice. That's
+# the actual gap a reasoning model is useful for - not replacing score_risk()
+# (still the sole, deterministic decider of risk_score and the pending_review
+# gate below), but giving a human approver a second, deliberative read on
+# the cases where the fixed threshold is least informative. Symmetric around
+# HIGH_RISK_THRESHOLD: a hair under it is exactly as ambiguous as a hair over.
+BORDERLINE_BAND = (0.55, 0.85)
 
 
 def get_party(invoice: Invoice) -> Vendor | Customer | None:
@@ -216,6 +246,66 @@ def score_risk(signals: dict) -> tuple[float, list[str]]:
     return min(risk, 1.0), reasons
 
 
+def _borderline_review_prompt(risk_score: float, reasons: list[str]) -> str:
+    return (
+        f"An invoice scored {risk_score:.0%} risk from these deterministic signals:\n"
+        + "\n".join(f"- {r}" for r in reasons)
+        + f"\n\nThis fell inside a genuinely ambiguous band around our {HIGH_RISK_THRESHOLD:.0%} review "
+        "threshold - not a clean pass, not a clear fail. Reason step by step about whether this "
+        "particular COMBINATION of signals looks more like innocent coincidence or a real, worth-a-look "
+        "problem (consider: do the signals corroborate each other, or are they independent quirks that "
+        "just happen to co-occur? is there a mundane explanation for each one on its own?). Do not invent "
+        "any facts beyond what's listed above. End with exactly one line: "
+        "'RECOMMENDATION: closer look warranted' or 'RECOMMENDATION: standard handling is fine'."
+    )
+
+
+def deliberate_on_borderline_case(risk_score: float, reasons: list[str]) -> dict | None:
+    """The one and only place a reasoning model is used in this agent -
+    and it is advisory ONLY. Its purpose is narrower and more honest than
+    "detect fraud better": give a human approver a second, deliberative
+    read specifically on the cases where a fixed numeric threshold is
+    least informative (see BORDERLINE_BAND). Returns None (skips the LLM
+    call entirely) for scores outside that band - reasoning models are
+    slow, and there is no ambiguity to deliberate over on a clear-cut
+    score. Returns None on LLM-unavailable too, same fallback discipline
+    as explain_risk_with_llm(): this step is a bonus, not a dependency.
+
+    NOT called from run_fraud_check() - a real gap found by actually
+    running this against deepseek-r1:8b on a CPU-only laptop rather than
+    assuming it would be fast: a single deliberation call measured
+    3-6+ minutes, and even num_predict=1536 wasn't always enough for the
+    model to reach a concluding line (see reasoning_model_practice.py's
+    own measured output). Blocking invoice creation on that for a review
+    step that's advisory in the first place would be a real regression,
+    not a reasonable tradeoff - so this runs on-demand instead, from the
+    "Get AI's second opinion" button (deliberate_on_borderline_case_stream
+    below), never automatically. This function itself is kept as the
+    non-streaming building block reason_stream() is layered on, and for
+    tests/scripts that want the simpler blocking call."""
+    if not (BORDERLINE_BAND[0] <= risk_score <= BORDERLINE_BAND[1]):
+        return None
+    try:
+        return reason(messages=[{"role": "user", "content": _borderline_review_prompt(risk_score, reasons)}])
+    except LLMUnavailableError as e:
+        logger.warning("Borderline-case reasoning call failed, proceeding without a second opinion: %s", e)
+        return None
+
+
+def deliberate_on_borderline_case_stream(risk_score: float, reasons: list[str]):
+    """Streaming counterpart to deliberate_on_borderline_case(), and the
+    one actually wired to the UI (see the web route's own docstring for
+    why: multi-minute latency needs live progress, not a blank page).
+    Still gated to BORDERLINE_BAND; still advisory only. Yields nothing
+    at all (not even an LLMUnavailableError) for an out-of-band score -
+    the caller is expected to check BORDERLINE_BAND itself before
+    offering the button in the first place, same as this function does
+    before making any LLM call."""
+    if not (BORDERLINE_BAND[0] <= risk_score <= BORDERLINE_BAND[1]):
+        return
+    yield from reason_stream(messages=[{"role": "user", "content": _borderline_review_prompt(risk_score, reasons)}])
+
+
 def _risk_explanation_prompt(risk_score: float, reasons: list[str]) -> str:
     return (
         f"An invoice was scored {risk_score:.0%} risk based on these factors:\n"
@@ -260,13 +350,18 @@ def run_fraud_check(db: Session, invoice: Invoice) -> FraudFlag | None:
         return None
 
     signals = compute_risk_signals(db, invoice, party)
-    risk_score, reasons = score_risk(signals)
+    risk_score, reasons = score_risk(signals)  # <-- the only thing that decides risk_score/pending_review, below
 
     try:
         explanation = explain_risk_with_llm(invoice, risk_score, reasons)
     except LLMUnavailableError:
         explanation = " ".join(reasons)
 
+    # No borderline-case deliberation call here - see
+    # deliberate_on_borderline_case()'s docstring for why that runs
+    # on-demand (a "Get AI's second opinion" button) instead of blocking
+    # invoice creation on a multi-minute reasoning-model call for a
+    # review step that's advisory only in the first place.
     flag = FraudFlag(
         invoice_id=invoice.id,
         risk_score=Decimal(str(round(risk_score, 3))),

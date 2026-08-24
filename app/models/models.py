@@ -13,7 +13,7 @@ UUIDs later is a column-type change, not a redesign.
 import enum
 
 from sqlalchemy import (
-    Column, Integer, String, Numeric, Date, DateTime, ForeignKey, Enum, Boolean
+    Column, Integer, String, Numeric, Date, DateTime, ForeignKey, Enum, Boolean, Text
 )
 from sqlalchemy.orm import relationship
 
@@ -202,6 +202,9 @@ class FraudFlag(Base):
     risk_score = Column(Numeric(4, 3), nullable=False)
     reasons_json = Column(String(2000), nullable=False)  # JSON-encoded list[str] of rule-based reasons
     explanation = Column(String(2000), nullable=True)     # LLM-written prose version of the reasons
+    reasoning_trace = Column(Text, nullable=True)  # a reasoning model's chain-of-thought second opinion -
+    # ONLY populated for genuinely borderline scores (see fraud_risk_agent.BORDERLINE_BAND); never influences
+    # risk_score or the pending_review gate above, which are decided before this ever runs
     created_at = Column(DateTime, default=utcnow_naive)
 
     invoice = relationship("Invoice", back_populates="fraud_flags")
