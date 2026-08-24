@@ -16,12 +16,16 @@
     {% elif req.type == "send_communication" %}
         <a href="/web/communications">View in Communications</a>
     {% endif %}
+    {% if current_user.role.value == "owner" %}
     <form method="post" action="/web/approvals/{{ req.id }}/approve" style="display:inline; margin-left:1rem;">
         <button type="submit" style="margin-top:0;">✅ Approve</button>
     </form>
     <form method="post" action="/web/approvals/{{ req.id }}/reject" style="display:inline; margin-left:0.5rem;">
         <button type="submit" class="secondary" style="margin-top:0;">❌ Reject</button>
     </form>
+    {% else %}
+    <span class="confidence" style="margin-left:1rem;">Only an owner can approve or reject - ask one to decide this.</span>
+    {% endif %}
 </div>
 {% endfor %}
 {% else %}

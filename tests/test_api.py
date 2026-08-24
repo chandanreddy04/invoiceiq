@@ -190,6 +190,33 @@ def test_bookkeeper_cannot_access_approvals_actions(client):
     assert resp.status_code == 403
 
 
+def test_approvals_page_hides_approve_reject_buttons_for_bookkeeper(client, mock_ollama_chat):
+    """Real gap found live: the buttons rendered for a bookkeeper even
+    though clicking one would 403 server-side (already covered by
+    test_bookkeeper_cannot_access_approvals_actions above) - confusing,
+    not a security hole. The page should only ever offer an action a
+    role can actually take."""
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    payload = {
+        "direction": "incoming", "invoice_number": "RBAC-UI-1", "vendor_id": 1,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "Item A", "quantity": 1, "unit_price": 10}],
+    }
+    invoice_id = client.post("/invoices", json=payload).json()["id"]
+    client.post(f"/web/invoices/{invoice_id}/draft-reminder")
+
+    _login(client, BOOKKEEPER_EMAIL, BOOKKEEPER_PASSWORD)
+    bookkeeper_page = client.get("/web/approvals").text
+    assert "Only an owner can approve or reject" in bookkeeper_page
+    assert "/approve" not in bookkeeper_page
+    assert "/reject" not in bookkeeper_page
+
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    owner_page = client.get("/web/approvals").text
+    assert "✅ Approve" in owner_page
+    assert "❌ Reject" in owner_page
+
+
 def test_creating_invoice_via_web_ui_writes_audit_log(client):
     _login(client, OWNER_EMAIL, OWNER_PASSWORD)
     resp = client.post("/web/invoices/new", data={
