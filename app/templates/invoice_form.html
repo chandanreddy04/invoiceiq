@@ -178,6 +178,10 @@ function streamRiskExplanation(invoiceId) {
                 {% for p in invoice.payments %}
                 {{ p.amount }} {{ invoice.currency }} via {{ p.method }} on {{ p.paid_date }}{% if p.bank_transaction_id %} (bank reconciliation){% endif %}{% if not loop.last %}<br>{% endif %}
                 {% endfor %}
+                <br>Paid so far: {{ paid_total }} {{ invoice.currency }}
+                {% if remaining_creditable is not none and remaining_creditable > 0 %}
+                · Balance due: {{ remaining_creditable }} {{ invoice.currency }}
+                {% endif %}
             </p>
             {% endif %}
         </div>
@@ -205,6 +209,14 @@ function streamRiskExplanation(invoiceId) {
         </tr>
         {% endfor %}
     </table>
+    {% if invoice %}
+    <p class="confidence" style="text-align:right;">
+        Subtotal: {{ invoice.subtotal }} {{ invoice.currency }}
+        · Tax: {{ invoice.tax }} {{ invoice.currency }}
+        · Discount: {{ invoice.discount }} {{ invoice.currency }}
+        · <strong>Total: {{ invoice.total }} {{ invoice.currency }}</strong>
+    </p>
+    {% endif %}
     <script>
         (function () {
             const table = document.getElementById("items-table");

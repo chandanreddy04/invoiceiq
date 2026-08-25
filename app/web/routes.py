@@ -575,13 +575,14 @@ def web_view_invoice(invoice_id: int, request: Request, db: Session = Depends(ge
     )
     credit_notes = credit_note_service.get_credit_notes_for_invoice(db, invoice_id) if invoice else []
     remaining_creditable = credit_note_service.remaining_creditable(db, invoice) if invoice else None
+    paid_total = credit_note_service.total_paid(db, invoice_id) if invoice else None
     return templates.TemplateResponse(
         "invoice_form.html",
         {
             "request": request, "invoice": invoice, "vendors": vendors, "customers": customers,
             "values": {}, "line_items": None, "extraction": None,
             "form_action": f"/web/invoices/{invoice_id}", "fraud_flag": fraud_flag, "comms": comms,
-            "credit_notes": credit_notes, "remaining_creditable": remaining_creditable,
+            "credit_notes": credit_notes, "remaining_creditable": remaining_creditable, "paid_total": paid_total,
             "current_user": current_user,
         },
     )
