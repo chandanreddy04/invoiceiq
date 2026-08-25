@@ -173,6 +173,13 @@ function streamRiskExplanation(invoiceId) {
                 <option value="{{ s }}" {% if invoice.payment_status.value == s %}selected{% endif %}>{{ s }}</option>
                 {% endfor %}
             </select>
+            {% if invoice.payments %}
+            <p class="confidence">
+                {% for p in invoice.payments %}
+                {{ p.amount }} {{ invoice.currency }} via {{ p.method }} on {{ p.paid_date }}{% if p.bank_transaction_id %} (bank reconciliation){% endif %}{% if not loop.last %}<br>{% endif %}
+                {% endfor %}
+            </p>
+            {% endif %}
         </div>
         <div>
             <label>Invoice status</label>
