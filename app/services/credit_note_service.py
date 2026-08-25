@@ -8,9 +8,10 @@ actually billed, same as real accounting practice).
 import re
 from decimal import Decimal
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models.models import CreditNote, Invoice
+from app.models.models import CreditNote, Invoice, Payment
 
 _CN_NUMBER_PATTERN = re.compile(r"^CN-(\d+)$")
 
@@ -43,8 +44,20 @@ def total_credited(db: Session, invoice_id: int) -> Decimal:
     return sum((n.amount for n in notes), Decimal("0"))
 
 
+def total_paid(db: Session, invoice_id: int) -> Decimal:
+    return Decimal(db.query(func.coalesce(func.sum(Payment.amount), 0)).filter(Payment.invoice_id == invoice_id).scalar())
+
+
 def remaining_creditable(db: Session, invoice: Invoice) -> Decimal:
-    return invoice.total - total_credited(db, invoice.id)
+    """What's actually still owed on this invoice - what was billed,
+    minus what's already been credited AND what's already been paid.
+    Without netting out payments, a partially-paid invoice showed "up to
+    the full total remaining" here, which both misrepresented the
+    balance on screen and would have let someone issue a credit note
+    larger than what the customer still owes (the same number also sets
+    the amount field's max and create_credit_note()'s own validation
+    ceiling - one definition, used everywhere, not two that could drift)."""
+    return invoice.total - total_credited(db, invoice.id) - total_paid(db, invoice.id)
 
 
 def create_credit_note(db: Session, org_id: int, invoice: Invoice, reason: str, amount: Decimal, created_by: str) -> CreditNote:
