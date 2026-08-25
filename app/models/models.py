@@ -372,6 +372,47 @@ class RecurringInvoiceItem(Base):
     recurring_invoice = relationship("RecurringInvoice", back_populates="items")
 
 
+class BankTransaction(Base):
+    """
+    Reconciliation Agent's input and working state - one row per line
+    from an imported bank/ledger CSV export. Deliberately separate from
+    Payment: a BankTransaction is a claim from the bank that hasn't
+    necessarily been tied to anything yet; a Payment is the confirmed,
+    reconciled fact once one has been matched to an invoice (see
+    app/agents/reconciliation_agent.py's _record_payment() - the first
+    code in this project to ever write a Payment row; the table existed
+    in the schema since Phase 1, but every prior "mark paid" action just
+    flipped Invoice.payment_status directly with no record behind it).
+    """
+    __tablename__ = "bank_transactions"
+
+    id = Column(Integer, primary_key=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    transaction_date = Column(Date, nullable=False)
+    description = Column(String(500), nullable=False)
+    # Signed, standard bank-statement convention: negative = money out
+    # (can only settle an incoming/vendor bill), positive = money in
+    # (can only settle an outgoing/customer invoice). This sign is what
+    # reconciliation_agent._candidate_invoices() uses to never cross-match
+    # a vendor bill against a customer invoice that happens to share a total.
+    amount = Column(Numeric(12, 2), nullable=False)
+    currency = Column(String(3), nullable=False, default="USD")
+    status = Column(String(20), nullable=False, default="unmatched")  # unmatched | matched | ignored
+    matched_invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=True)
+    suggested_invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=True)
+    match_confidence = Column(String(20), nullable=True)  # "exact" | "likely" | "ambiguous" | None
+    # LLM-written, cached the first time this transaction is left
+    # unmatched - never regenerated on every re-scan, so opening the
+    # Reconciliation page can't trigger a pile of LLM calls (a real
+    # mistake made and fixed once already this project - see the
+    # reasoning-model second-opinion feature's history).
+    explanation = Column(String(1000), nullable=True)
+    created_at = Column(DateTime, default=utcnow_naive)
+
+    matched_invoice = relationship("Invoice", foreign_keys=[matched_invoice_id])
+    suggested_invoice = relationship("Invoice", foreign_keys=[suggested_invoice_id])
+
+
 class CreditNote(Base):
     """
     Real gap from a "could a local business actually run on this"

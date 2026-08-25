@@ -28,14 +28,14 @@ from app.utils.time import utcnow_naive
 from app.database.session import get_db
 from app.models.models import (
     Invoice, Customer, Vendor, InvoiceDirection, PaymentStatus, InvoiceStatus,
-    FraudFlag, AgentLog, Communication, ApprovalRequest, User, AuditLog, CreditNote,
+    FraudFlag, AgentLog, Communication, ApprovalRequest, User, AuditLog, CreditNote, BankTransaction,
 )
 from app.schemas.invoice import InvoiceCreate, InvoiceItemCreate, InvoiceUpdate
 from app.schemas.party import VendorCreate, CustomerCreate
 from app.services import invoice_service, extraction_service, llm_extraction_service, invoice_pdf_service, email_service, recurring_invoice_service, credit_note_service
 from app.schemas.recurring_invoice import RecurringInvoiceCreate
 from app.services.validation_service import InvoiceValidationError
-from app.agents import orchestrator, communication_agent, payment_ap_agent, collections_agent, fraud_risk_agent
+from app.agents import orchestrator, communication_agent, payment_ap_agent, collections_agent, fraud_risk_agent, reconciliation_agent
 from app.tools import invoice_tools
 from app.security.auth import verify_password, create_session_token
 from app.security.deps import require_login, require_owner, get_current_user, SESSION_COOKIE_NAME
@@ -855,6 +855,95 @@ def web_stream_collections_narration(db: Session = Depends(get_db), current_user
         yield "event: done\ndata: \n\n"
 
     return StreamingResponse(_generate(), media_type="text/event-stream")
+
+
+@router.get("/reconciliation", response_class=HTMLResponse)
+def web_reconciliation(request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    """Re-runs the (fast, deterministic, no-LLM) matching pass every time
+    this page loads - a newly created invoice might now make a
+    previously-unmatched transaction an unambiguous match. See
+    reconciliation_agent's docstring for why this is safe to do on every
+    page view but the LLM explanation below never is."""
+    result = orchestrator.run_reconciliation_scan(db, DEFAULT_ORG_ID)
+    unmatched = (
+        db.query(BankTransaction)
+        .filter(BankTransaction.organization_id == DEFAULT_ORG_ID, BankTransaction.status == "unmatched")
+        .order_by(BankTransaction.transaction_date.desc())
+        .all()
+    )
+    matched = (
+        db.query(BankTransaction)
+        .filter(BankTransaction.organization_id == DEFAULT_ORG_ID, BankTransaction.status == "matched")
+        .order_by(BankTransaction.transaction_date.desc())
+        .limit(25)
+        .all()
+    )
+    return templates.TemplateResponse("reconciliation.html", {
+        "request": request, "result": result, "unmatched": unmatched, "matched": matched,
+        "current_user": current_user,
+    })
+
+
+@router.post("/reconciliation/upload")
+async def web_reconciliation_upload(file: UploadFile = File(...), db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    """CSV columns: date (YYYY-MM-DD), description, amount (signed -
+    negative = money out/settles a vendor bill, positive = money
+    in/settles a customer invoice). Malformed rows are skipped rather
+    than failing the whole import, same "degrade, don't block" pattern
+    as the PDF-upload regex fallback elsewhere in this app."""
+    content = (await file.read()).decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(content))
+    created = 0
+    for row in reader:
+        try:
+            db.add(BankTransaction(
+                organization_id=DEFAULT_ORG_ID,
+                transaction_date=date.fromisoformat((row.get("date") or "").strip()),
+                description=(row.get("description") or "").strip() or "(no description)",
+                amount=Decimal((row.get("amount") or "").strip()),
+            ))
+            created += 1
+        except (KeyError, ValueError, InvalidOperation):
+            continue
+    db.commit()
+    _audit(db, "bank_transaction", 0, "upload", current_user.email, {"rows_created": created})
+    orchestrator.run_reconciliation_scan(db, DEFAULT_ORG_ID)
+    return RedirectResponse("/web/reconciliation", status_code=303)
+
+
+@router.post("/reconciliation/{txn_id}/explain")
+def web_reconciliation_explain(txn_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    """On-demand, one transaction at a time, and cached - never called
+    in bulk from the page-load scan above. See
+    reconciliation_agent.explain_unmatched_with_llm()'s docstring."""
+    txn = db.query(BankTransaction).filter(BankTransaction.id == txn_id, BankTransaction.organization_id == DEFAULT_ORG_ID).first()
+    if txn is not None and txn.status == "unmatched" and not txn.explanation:
+        suggested = db.get(Invoice, txn.suggested_invoice_id) if txn.suggested_invoice_id else None
+        txn.explanation = reconciliation_agent.explain_unmatched_with_llm(txn, suggested)
+        db.commit()
+    return RedirectResponse("/web/reconciliation", status_code=303)
+
+
+@router.post("/reconciliation/{txn_id}/confirm")
+def web_reconciliation_confirm(txn_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    txn = db.query(BankTransaction).filter(BankTransaction.id == txn_id, BankTransaction.organization_id == DEFAULT_ORG_ID).first()
+    if txn is not None and txn.status == "unmatched" and txn.suggested_invoice_id is not None:
+        invoice = db.get(Invoice, txn.suggested_invoice_id)
+        if invoice is not None:
+            reconciliation_agent.confirm_match(db, invoice, txn)
+            db.commit()
+            _audit(db, "bank_transaction", txn_id, "confirm_match", current_user.email, {"invoice_id": invoice.id})
+    return RedirectResponse("/web/reconciliation", status_code=303)
+
+
+@router.post("/reconciliation/{txn_id}/ignore")
+def web_reconciliation_ignore(txn_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    txn = db.query(BankTransaction).filter(BankTransaction.id == txn_id, BankTransaction.organization_id == DEFAULT_ORG_ID).first()
+    if txn is not None:
+        txn.status = "ignored"
+        db.commit()
+        _audit(db, "bank_transaction", txn_id, "ignore", current_user.email)
+    return RedirectResponse("/web/reconciliation", status_code=303)
 
 
 @router.get("/communications", response_class=HTMLResponse)

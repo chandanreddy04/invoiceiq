@@ -23,7 +23,7 @@ import uuid
 from sqlalchemy.orm import Session
 
 from app.models.models import Invoice, AgentLog
-from app.agents import fraud_risk_agent, classification_agent, financial_analysis_agent, collections_agent, payment_ap_agent
+from app.agents import fraud_risk_agent, classification_agent, financial_analysis_agent, collections_agent, payment_ap_agent, reconciliation_agent
 
 logger = logging.getLogger(__name__)
 
@@ -126,3 +126,20 @@ def run_payment_scan(db: Session, org_id: int) -> dict:
         summarize=lambda r: f"{len(r['recommended'])} recommended, {len(r['held_for_review'])} held for review",
     )
     return result or {"recommended": [], "held_for_review": [], "explanation": "The assistant is unavailable right now."}
+
+
+def run_reconciliation_scan(db: Session, org_id: int) -> dict:
+    """The fifth kind of task the Orchestrator handles: matching
+    imported bank transactions against open invoices - triggered by a
+    CSV upload and again every time the Reconciliation page loads (a
+    newly created invoice might now make a previously-unmatched
+    transaction an unambiguous match). No LLM call happens here - see
+    reconciliation_agent's own docstring for why that's deliberate."""
+    task_id = str(uuid.uuid4())[:8]
+    result = _log_step(
+        db, task_id, None, "reconciliation_agent",
+        lambda: reconciliation_agent.run_reconciliation(db, org_id),
+        input_summary=f"org #{org_id}: reconcile unmatched bank transactions",
+        summarize=lambda r: f"{r['matched']} matched, {r['still_unmatched']} still unmatched",
+    )
+    return result or {"scanned": 0, "matched": 0, "still_unmatched": 0}

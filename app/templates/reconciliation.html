@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Reconciliation - InvoiceIQ{% endblock %}
+{% block content %}
+<h1>🏦 Reconciliation</h1>
+<p class="confidence">The Reconciliation Agent only auto-matches a transaction when exactly one invoice matches it unambiguously (same amount, same currency, and within {{ 45 }} days of the due date) - it creates the actual Payment record when it does. Anything less certain is left here for you to confirm or ignore; nothing is guessed.</p>
+
+<div class="flash {{ 'success' if result.still_unmatched == 0 else '' }}">
+    Last scan: {{ result.scanned }} unmatched transaction(s) checked, {{ result.matched }} auto-matched, {{ result.still_unmatched }} still need review.
+</div>
+
+<h3>Import a bank/ledger statement</h3>
+<p class="confidence">CSV with columns <code>date</code> (YYYY-MM-DD), <code>description</code>, <code>amount</code> (signed - negative = money out, settles a vendor bill; positive = money in, settles a customer invoice).</p>
+<form method="post" action="/web/reconciliation/upload" enctype="multipart/form-data" style="margin-bottom:1.5rem;">
+    <input type="file" name="file" accept=".csv" required>
+    <button type="submit">⬆️ Upload &amp; reconcile</button>
+</form>
+
+<h3>Needs review ({{ unmatched|length }})</h3>
+{% if unmatched %}
+<table>
+    <tr><th>Date</th><th>Description</th><th>Amount</th><th>Suggested match</th><th>Confidence</th><th></th></tr>
+    {% for txn in unmatched %}
+    <tr>
+        <td>{{ txn.transaction_date }}</td>
+        <td>{{ txn.description }}</td>
+        <td>{{ txn.amount }} {{ txn.currency }}</td>
+        <td>
+            {% if txn.suggested_invoice %}
+            <a href="/web/invoices/{{ txn.suggested_invoice.id }}">{{ txn.suggested_invoice.invoice_number }}</a>
+            ({{ txn.suggested_invoice.total }} {{ txn.suggested_invoice.currency }}, due {{ txn.suggested_invoice.due_date }})
+            {% elif txn.match_confidence == "ambiguous" %}
+            <span class="confidence">multiple invoices match this amount - review manually</span>
+            {% else %}
+            <span class="confidence">no invoice on file matches this amount</span>
+            {% endif %}
+        </td>
+        <td>{{ txn.match_confidence or "-" }}</td>
+        <td style="white-space:nowrap;">
+            {% if txn.suggested_invoice %}
+            <form method="post" action="/web/reconciliation/{{ txn.id }}/confirm" style="display:inline;"><button type="submit" style="font-size:0.85em;">✅ Confirm</button></form>
+            {% endif %}
+            <form method="post" action="/web/reconciliation/{{ txn.id }}/ignore" style="display:inline;"><button type="submit" class="secondary" style="font-size:0.85em;">🚫 Ignore</button></form>
+        </td>
+    </tr>
+    <tr>
+        <td colspan="6" style="padding-top:0;">
+            {% if txn.explanation %}
+            <span class="confidence">🧠 {{ txn.explanation }}</span>
+            {% else %}
+            <form method="post" action="/web/reconciliation/{{ txn.id }}/explain" style="display:inline;"><button type="submit" class="secondary" style="font-size:0.8em;">🧠 Explain (AI)</button></form>
+            {% endif %}
+        </td>
+    </tr>
+    {% endfor %}
+</table>
+{% else %}
+<p>Nothing needs review right now.</p>
+{% endif %}
+
+<h3>Recently matched</h3>
+{% if matched %}
+<table>
+    <tr><th>Date</th><th>Description</th><th>Amount</th><th>Matched invoice</th><th>Confidence</th></tr>
+    {% for txn in matched %}
+    <tr>
+        <td>{{ txn.transaction_date }}</td>
+        <td>{{ txn.description }}</td>
+        <td>{{ txn.amount }} {{ txn.currency }}</td>
+        <td>{% if txn.matched_invoice %}<a href="/web/invoices/{{ txn.matched_invoice.id }}">{{ txn.matched_invoice.invoice_number }}</a>{% else %}-{% endif %}</td>
+        <td>{{ txn.match_confidence }}</td>
+    </tr>
+    {% endfor %}
+</table>
+{% else %}
+<p>No transactions matched yet.</p>
+{% endif %}
+{% endblock %}

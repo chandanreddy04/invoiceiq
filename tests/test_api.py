@@ -1325,3 +1325,56 @@ def test_delete_customer_with_no_invoices_succeeds(client):
     db = client.session_factory()
     assert db.get(Customer, customer_id) is None
     db.close()
+
+
+def test_reconciliation_upload_auto_matches_exact_transaction_and_creates_payment(client):
+    """End-to-end: a CSV bank statement, uploaded through the real route,
+    auto-matches an unambiguous transaction and writes a real Payment
+    row - the deterministic matching logic itself is unit-tested in
+    test_reconciliation_agent.py; this proves the upload/parse/route
+    wiring around it actually works."""
+    payload = {
+        "direction": "incoming", "invoice_number": "RECON-1", "vendor_id": 1,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "Item A", "quantity": 1, "unit_price": 250}],
+    }
+    invoice_id = client.post("/invoices", json=payload).json()["id"]
+
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    csv_content = "date,description,amount\n2026-02-01,Vendor payment,-250.00\n"
+    resp = client.post(
+        "/web/reconciliation/upload",
+        files={"file": ("bank.csv", csv_content, "text/csv")},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    page = client.get("/web/reconciliation").text
+    assert "RECON-1" in page  # shows up in "Recently matched"
+
+    from app.models.models import Invoice, PaymentStatus, Payment
+    db = client.session_factory()
+    invoice = db.get(Invoice, invoice_id)
+    assert invoice.payment_status == PaymentStatus.paid
+    assert db.query(Payment).filter(Payment.invoice_id == invoice_id).count() == 1
+    db.close()
+
+
+def test_reconciliation_unmatched_transaction_can_be_ignored(client):
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    csv_content = "date,description,amount\n2026-02-01,Unrelated transfer,-999999.00\n"
+    client.post("/web/reconciliation/upload", files={"file": ("bank.csv", csv_content, "text/csv")})
+
+    from app.models.models import BankTransaction
+    db = client.session_factory()
+    txn = db.query(BankTransaction).filter(BankTransaction.description == "Unrelated transfer").first()
+    txn_id = txn.id
+    assert txn.status == "unmatched"
+    db.close()
+
+    resp = client.post(f"/web/reconciliation/{txn_id}/ignore", follow_redirects=False)
+    assert resp.status_code == 303
+
+    db = client.session_factory()
+    assert db.get(BankTransaction, txn_id).status == "ignored"
+    db.close()
