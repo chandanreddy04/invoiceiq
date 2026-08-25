@@ -23,7 +23,7 @@ import uuid
 from sqlalchemy.orm import Session
 
 from app.models.models import Invoice, AgentLog
-from app.agents import fraud_risk_agent, classification_agent, financial_analysis_agent, collections_agent, payment_ap_agent, reconciliation_agent
+from app.agents import fraud_risk_agent, classification_agent, financial_analysis_agent, collections_agent, payment_ap_agent, reconciliation_agent, cash_application_agent
 
 logger = logging.getLogger(__name__)
 
@@ -143,3 +143,20 @@ def run_reconciliation_scan(db: Session, org_id: int) -> dict:
         summarize=lambda r: f"{r['matched']} matched, {r['still_unmatched']} still unmatched",
     )
     return result or {"scanned": 0, "matched": 0, "still_unmatched": 0}
+
+
+def run_cash_application_scan(db: Session, org_id: int) -> dict:
+    """The sixth kind of task the Orchestrator handles: proposing
+    partial/split allocations for bank transactions Reconciliation Agent
+    already left unmatched with no suggestion of its own - triggered
+    right after run_reconciliation_scan() on the same Reconciliation page
+    load, never before it (this agent depends on Reconciliation's pass
+    having already run for this same request)."""
+    task_id = str(uuid.uuid4())[:8]
+    result = _log_step(
+        db, task_id, None, "cash_application_agent",
+        lambda: cash_application_agent.run_cash_application(db, org_id),
+        input_summary=f"org #{org_id}: propose allocations for still-unmatched transactions",
+        summarize=lambda r: f"{r['proposed']} allocation(s) proposed",
+    )
+    return result or {"scanned": 0, "proposed": 0}

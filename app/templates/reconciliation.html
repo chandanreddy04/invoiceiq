@@ -6,6 +6,7 @@
 
 <div class="flash {{ 'success' if result.still_unmatched == 0 else '' }}">
     Last scan: {{ result.scanned }} unmatched transaction(s) checked, {{ result.matched }} auto-matched, {{ result.still_unmatched }} still need review.
+    {% if cash_app_result.scanned %}Cash Application Agent then proposed {{ cash_app_result.proposed }} of {{ cash_app_result.scanned }} remaining allocation(s).{% endif %}
 </div>
 
 <h3>Import a bank/ledger statement</h3>
@@ -28,16 +29,27 @@
             {% if txn.suggested_invoice %}
             <a href="/web/invoices/{{ txn.suggested_invoice.id }}">{{ txn.suggested_invoice.invoice_number }}</a>
             ({{ txn.suggested_invoice.total }} {{ txn.suggested_invoice.currency }}, due {{ txn.suggested_invoice.due_date }})
+            {% elif txn.allocations %}
+            <span class="confidence">
+                {% if txn.allocations|length > 1 %}💰 split across {{ txn.allocations|length }} invoices:{% else %}💰 partial payment toward:{% endif %}
+            </span>
+            <ul style="margin:0.25rem 0 0 1.1rem; padding:0;">
+                {% for alloc in txn.allocations %}
+                <li><a href="/web/invoices/{{ alloc.invoice.id }}">{{ alloc.invoice.invoice_number }}</a> - apply {{ alloc.amount }} {{ txn.currency }} of {{ alloc.invoice.total }} {{ alloc.invoice.currency }}</li>
+                {% endfor %}
+            </ul>
             {% elif txn.match_confidence == "ambiguous" %}
             <span class="confidence">multiple invoices match this amount - review manually</span>
             {% else %}
             <span class="confidence">no invoice on file matches this amount</span>
             {% endif %}
         </td>
-        <td>{{ txn.match_confidence or "-" }}</td>
+        <td>{{ txn.match_confidence or ("allocation proposed" if txn.allocations else "-") }}</td>
         <td style="white-space:nowrap;">
             {% if txn.suggested_invoice %}
             <form method="post" action="/web/reconciliation/{{ txn.id }}/confirm" style="display:inline;"><button type="submit" style="font-size:0.85em;">✅ Confirm</button></form>
+            {% elif txn.allocations %}
+            <form method="post" action="/web/reconciliation/{{ txn.id }}/apply-allocation" style="display:inline;"><button type="submit" style="font-size:0.85em;">✅ Apply allocation</button></form>
             {% endif %}
             <form method="post" action="/web/reconciliation/{{ txn.id }}/ignore" style="display:inline;"><button type="submit" class="secondary" style="font-size:0.85em;">🚫 Ignore</button></form>
         </td>
@@ -66,8 +78,14 @@
         <td>{{ txn.transaction_date }}</td>
         <td>{{ txn.description }}</td>
         <td>{{ txn.amount }} {{ txn.currency }}</td>
-        <td>{% if txn.matched_invoice %}<a href="/web/invoices/{{ txn.matched_invoice.id }}">{{ txn.matched_invoice.invoice_number }}</a>{% else %}-{% endif %}</td>
-        <td>{{ txn.match_confidence }}</td>
+        <td>
+            {% if txn.matched_invoice %}
+            <a href="/web/invoices/{{ txn.matched_invoice.id }}">{{ txn.matched_invoice.invoice_number }}</a>
+            {% elif txn.payments %}
+            {% for p in txn.payments %}<a href="/web/invoices/{{ p.invoice.id }}">{{ p.invoice.invoice_number }}</a> ({{ p.amount }}){% if not loop.last %}, {% endif %}{% endfor %}
+            {% else %}-{% endif %}
+        </td>
+        <td>{{ txn.match_confidence or ("split allocation" if txn.payments|length > 1 else "-") }}</td>
     </tr>
     {% endfor %}
 </table>

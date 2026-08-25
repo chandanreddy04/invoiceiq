@@ -43,6 +43,7 @@ _MIGRATIONS = [
     ("customers", "created_at", "TIMESTAMP"),
     ("invoices", "public_token", "VARCHAR(64)"),
     ("vendors", "tax_id", "VARCHAR(50)"),
+    ("payments", "bank_transaction_id", "INTEGER"),
 ]
 
 # Separate from _MIGRATIONS above because a plain ADD COLUMN never

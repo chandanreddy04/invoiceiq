@@ -128,10 +128,12 @@ def find_best_match(db: Session, org_id: int, txn: BankTransaction) -> tuple[Inv
 
 
 def _record_payment(db: Session, invoice: Invoice, txn: BankTransaction) -> Payment:
-    """The one place this agent writes money-movement to the database."""
+    """The one place this agent writes money-movement to the database.
+    Reused as-is by cash_application_agent.apply_allocation() for the
+    single-invoice case, and its own logic for the multi-invoice split."""
     payment = Payment(
         invoice_id=invoice.id, amount=abs(txn.amount), paid_date=txn.transaction_date,
-        method="bank_transfer", status="completed",
+        method="bank_transfer", status="completed", bank_transaction_id=txn.id,
     )
     db.add(payment)
     invoice.payment_status = PaymentStatus.paid

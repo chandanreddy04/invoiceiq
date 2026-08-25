@@ -183,6 +183,13 @@ class Payment(Base):
     paid_date = Column(Date, nullable=False)
     method = Column(String(50), default="bank_transfer")
     status = Column(String(50), default="completed")
+    # Which imported bank transaction this Payment came from, if any -
+    # nullable because a human can still mark an invoice paid with no
+    # bank record behind it (cash, check never digitized). Set by both
+    # the Reconciliation Agent's auto/confirmed match and the Cash
+    # Application Agent's applied allocations, so a Payment's origin is
+    # always traceable back to the statement line that produced it.
+    bank_transaction_id = Column(Integer, ForeignKey("bank_transactions.id"), nullable=True)
 
     invoice = relationship("Invoice", back_populates="payments")
 
@@ -411,6 +418,39 @@ class BankTransaction(Base):
 
     matched_invoice = relationship("Invoice", foreign_keys=[matched_invoice_id])
     suggested_invoice = relationship("Invoice", foreign_keys=[suggested_invoice_id])
+    # Cash Application Agent's proposed breakdown, if Reconciliation Agent
+    # itself found no single-invoice suggestion - see that agent's docstring.
+    allocations = relationship("SuggestedAllocation", back_populates="bank_transaction", cascade="all, delete-orphan")
+    # A split allocation settles several invoices with no single
+    # matched_invoice_id to point to - this is how the "Recently matched"
+    # view finds them all after apply_allocation() clears the
+    # SuggestedAllocation rows it came from.
+    payments = relationship("Payment")
+
+
+class SuggestedAllocation(Base):
+    """
+    The Cash Application Agent's proposed breakdown of one
+    BankTransaction across one or more invoices - the thing Reconciliation
+    Agent's single exact-amount match can't express. A transaction gets a
+    fresh set of these rows each time it's scanned (old ones cleared
+    first); nothing here moves money or changes an invoice's status until
+    a human applies the whole set via cash_application_agent.apply_
+    allocation() - proposing an allocation and applying one are
+    deliberately different actions, same as every other agent's
+    suggest-then-confirm pattern in this app.
+    """
+    __tablename__ = "suggested_allocations"
+
+    id = Column(Integer, primary_key=True)
+    bank_transaction_id = Column(Integer, ForeignKey("bank_transactions.id"), nullable=False)
+    invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=False)
+    amount = Column(Numeric(12, 2), nullable=False)
+    kind = Column(String(20), nullable=False)  # "partial" | "split_share"
+    created_at = Column(DateTime, default=utcnow_naive)
+
+    bank_transaction = relationship("BankTransaction", back_populates="allocations")
+    invoice = relationship("Invoice")
 
 
 class CreditNote(Base):

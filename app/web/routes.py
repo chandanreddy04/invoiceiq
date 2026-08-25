@@ -29,13 +29,14 @@ from app.database.session import get_db
 from app.models.models import (
     Invoice, Customer, Vendor, InvoiceDirection, PaymentStatus, InvoiceStatus,
     FraudFlag, AgentLog, Communication, ApprovalRequest, User, AuditLog, CreditNote, BankTransaction,
+    SuggestedAllocation,
 )
 from app.schemas.invoice import InvoiceCreate, InvoiceItemCreate, InvoiceUpdate
 from app.schemas.party import VendorCreate, CustomerCreate
 from app.services import invoice_service, extraction_service, llm_extraction_service, invoice_pdf_service, email_service, recurring_invoice_service, credit_note_service
 from app.schemas.recurring_invoice import RecurringInvoiceCreate
 from app.services.validation_service import InvoiceValidationError
-from app.agents import orchestrator, communication_agent, payment_ap_agent, collections_agent, fraud_risk_agent, reconciliation_agent
+from app.agents import orchestrator, communication_agent, payment_ap_agent, collections_agent, fraud_risk_agent, reconciliation_agent, cash_application_agent
 from app.tools import invoice_tools
 from app.security.auth import verify_password, create_session_token
 from app.security.deps import require_login, require_owner, get_current_user, SESSION_COOKIE_NAME
@@ -865,6 +866,7 @@ def web_reconciliation(request: Request, db: Session = Depends(get_db), current_
     reconciliation_agent's docstring for why this is safe to do on every
     page view but the LLM explanation below never is."""
     result = orchestrator.run_reconciliation_scan(db, DEFAULT_ORG_ID)
+    cash_app_result = orchestrator.run_cash_application_scan(db, DEFAULT_ORG_ID)
     unmatched = (
         db.query(BankTransaction)
         .filter(BankTransaction.organization_id == DEFAULT_ORG_ID, BankTransaction.status == "unmatched")
@@ -879,8 +881,8 @@ def web_reconciliation(request: Request, db: Session = Depends(get_db), current_
         .all()
     )
     return templates.TemplateResponse("reconciliation.html", {
-        "request": request, "result": result, "unmatched": unmatched, "matched": matched,
-        "current_user": current_user,
+        "request": request, "result": result, "cash_app_result": cash_app_result,
+        "unmatched": unmatched, "matched": matched, "current_user": current_user,
     })
 
 
@@ -914,12 +916,18 @@ async def web_reconciliation_upload(file: UploadFile = File(...), db: Session = 
 @router.post("/reconciliation/{txn_id}/explain")
 def web_reconciliation_explain(txn_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
     """On-demand, one transaction at a time, and cached - never called
-    in bulk from the page-load scan above. See
-    reconciliation_agent.explain_unmatched_with_llm()'s docstring."""
+    in bulk from the page-load scan above. Explains whichever suggestion
+    actually exists for this transaction: Reconciliation Agent's
+    single-invoice one, or Cash Application Agent's allocation - never
+    both, since Cash Application only ever runs on transactions
+    Reconciliation left with no suggestion of its own."""
     txn = db.query(BankTransaction).filter(BankTransaction.id == txn_id, BankTransaction.organization_id == DEFAULT_ORG_ID).first()
     if txn is not None and txn.status == "unmatched" and not txn.explanation:
-        suggested = db.get(Invoice, txn.suggested_invoice_id) if txn.suggested_invoice_id else None
-        txn.explanation = reconciliation_agent.explain_unmatched_with_llm(txn, suggested)
+        if txn.allocations:
+            txn.explanation = cash_application_agent.explain_allocation_with_llm(txn, txn.allocations)
+        else:
+            suggested = db.get(Invoice, txn.suggested_invoice_id) if txn.suggested_invoice_id else None
+            txn.explanation = reconciliation_agent.explain_unmatched_with_llm(txn, suggested)
         db.commit()
     return RedirectResponse("/web/reconciliation", status_code=303)
 
@@ -933,6 +941,20 @@ def web_reconciliation_confirm(txn_id: int, db: Session = Depends(get_db), curre
             reconciliation_agent.confirm_match(db, invoice, txn)
             db.commit()
             _audit(db, "bank_transaction", txn_id, "confirm_match", current_user.email, {"invoice_id": invoice.id})
+    return RedirectResponse("/web/reconciliation", status_code=303)
+
+
+@router.post("/reconciliation/{txn_id}/apply-allocation")
+def web_reconciliation_apply_allocation(txn_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
+    """The human-confirmed action for a Cash Application Agent proposal -
+    the only place this feature writes real Payment rows. See
+    cash_application_agent.apply_allocation()'s docstring."""
+    txn = db.query(BankTransaction).filter(BankTransaction.id == txn_id, BankTransaction.organization_id == DEFAULT_ORG_ID).first()
+    if txn is not None and txn.status == "unmatched" and txn.allocations:
+        invoice_ids = [a.invoice_id for a in txn.allocations]
+        cash_application_agent.apply_allocation(db, txn)
+        db.commit()
+        _audit(db, "bank_transaction", txn_id, "apply_allocation", current_user.email, {"invoice_ids": invoice_ids})
     return RedirectResponse("/web/reconciliation", status_code=303)
 
 
