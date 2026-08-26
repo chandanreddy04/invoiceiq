@@ -12,10 +12,13 @@ call, without changing anything else in the pipeline. That swap is
 the clearest demonstration in the whole project of "the LLM is one
 replaceable component, not the whole system."
 
-No OCR here on purpose (see project simplification decision): this
-only handles PDFs that already have a text layer, which covers most
-real-world invoices. Scanned image support is a documented future
-extension, not required for the core pipeline to work.
+No OCR here (see project simplification decision) - this module still
+only ever pulls PyMuPDF's own text layer, nothing more. A scanned PDF
+or a photographed invoice has no text layer at all, so has_extractable_
+text() below exists to detect exactly that case and hand off to a
+vision-capable model instead (see llm_extraction_service.
+extract_invoice_from_image()) rather than the pipeline just giving up,
+which is what happened before this module grew that second path.
 """
 
 import re
@@ -28,6 +31,33 @@ import fitz  # PyMuPDF
 def extract_text_from_pdf(file_bytes: bytes) -> str:
     with fitz.open(stream=file_bytes, filetype="pdf") as doc:
         return "\n".join(page.get_text() for page in doc)
+
+
+# A scanned/image-only PDF page has no text layer at all, so PyMuPDF
+# returns an empty (or whitespace/junk) string for it - there's nothing
+# to OCR here, just what's embedded as real text objects. A real
+# text-layer invoice, even a short one, always produces far more than
+# this many characters, so the threshold is a deliberately generous,
+# honest way to tell "no text layer" apart from "very short document"
+# without hardcoding a page count or fabricating an OCR confidence
+# score this app doesn't actually have.
+MIN_TEXT_LAYER_CHARS = 20
+
+
+def has_extractable_text(text: str) -> bool:
+    return len(text.strip()) >= MIN_TEXT_LAYER_CHARS
+
+
+def render_pdf_page_to_image(file_bytes: bytes, page_number: int = 0) -> bytes:
+    """The fallback path when has_extractable_text() says no: render the
+    page as a PNG so a vision-capable model can read it directly (see
+    llm_extraction_service.extract_invoice_from_image()) instead of the
+    pipeline simply giving up, which is all it could do before this.
+    150 DPI is enough resolution for a model to read normal printed
+    invoice text without producing an unnecessarily large image."""
+    with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+        pixmap = doc[page_number].get_pixmap(dpi=150)
+        return pixmap.tobytes("png")
 
 
 DATE_PATTERNS = ["%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%B %d, %Y", "%b %d, %Y"]

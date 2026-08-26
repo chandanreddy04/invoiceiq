@@ -41,6 +41,13 @@ if DATABASE_URL.startswith("postgres://"):
 # such automatic behavior, so it's read explicitly.
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "phi3.5")
+# phi3.5 has no vision capability at all - a separate vision-capable model
+# is needed for the one case that needs to read pixels instead of text
+# (see extraction_service.has_extractable_text()). llava-phi3 is the same
+# 3.8B size class as phi3.5 itself, so it costs about the same to run
+# locally, it just isn't pulled by default the way phi3.5 is documented
+# to be - `ollama pull llava-phi3` before this path is exercised.
+OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "llava-phi3")
 
 # Render's free tier has no CPU/RAM budget to run even a 3.8B local model,
 # so the cloud deployment needs a different LLM backend than local dev
@@ -57,6 +64,14 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 # free-tier production model - fast, and this app's structured-output
 # calls don't need the larger 120b variant's extra capacity.
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+# gpt-oss-20b is text-only. qwen/qwen3.6-27b is Groq's current vision-
+# capable model (confirmed against console.groq.com/docs/models, Aug
+# 2026) - but it's listed there as a PREVIEW model, the exact same
+# status llama-3.3-70b-versatile had right before it was pulled from
+# Groq's lineup and broke GROQ_MODEL above without warning. Same risk
+# here, same fix: overridable via env var so a future deprecation is a
+# one-line config change, not a code change.
+GROQ_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.6-27b")
 
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-only-insecure-default-change-in-env")
 

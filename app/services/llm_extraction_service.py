@@ -22,7 +22,9 @@ import json
 import logging
 
 from app.schemas.extraction import LLMExtractedInvoice
-from app.services.llm_client import MODEL_NAME, LLMUnavailableError, chat  # re-exported: every agent imports MODEL_NAME/LLMUnavailableError from this module
+from app.services.llm_client import (  # re-exported: every agent imports MODEL_NAME/LLMUnavailableError from this module
+    MODEL_NAME, VISION_MODEL_NAME, LLMUnavailableError, chat, chat_with_image,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,4 +65,50 @@ def extract_invoice_with_llm(raw_text: str) -> LLMExtractedInvoice:
         return LLMExtractedInvoice.model_validate(data)
     except (json.JSONDecodeError, ValueError) as e:
         logger.warning("LLM returned invalid structured output: %s", e)
+        raise LLMUnavailableError(f"Model output did not match schema: {e}") from e
+
+
+VISION_PROMPT = (
+    "You are looking at a photo or scan of an invoice. Extract structured "
+    "data from it, the same way you would from invoice text. Fill in the "
+    "fields as accurately as possible; if a field isn't visible in the "
+    "image, leave it as null/default. Dates must be in YYYY-MM-DD format. "
+    "Only include line items that actually appear as billed goods or "
+    "services - do not invent items you can't actually read.\n\n"
+    "vendor_name is the business ISSUING this invoice (the seller) - it is "
+    "almost always the very first line of the document, near a logo or "
+    "letterhead. It is NOT the 'Bill To' / 'Ship To' name, which is the "
+    "buyer receiving the invoice - never confuse the two.\n\n"
+    "vendor_address is that same vendor's own mailing address (usually "
+    "printed right below its name) - not the buyer's 'Bill To' address.\n\n"
+    "vendor_tax_id is that same vendor's Tax ID, EIN, VAT number, or "
+    "business license number, if the image shows one anywhere. Leave it "
+    "null if none is visible."
+)
+
+
+def extract_invoice_from_image(image_bytes: bytes) -> LLMExtractedInvoice:
+    """Vision counterpart to extract_invoice_with_llm() above - same job,
+    same output schema, same failure contract (raises LLMUnavailableError,
+    caller decides the fallback) - just reading pixels instead of a text
+    layer. Only ever called when extraction_service.has_extractable_text()
+    has already said there's no text to read in the first place (a
+    scanned PDF page, or a photographed/screenshotted invoice uploaded
+    directly as a JPG/PNG) - never a second opinion on a document the
+    text pipeline already handled."""
+    try:
+        content = chat_with_image(
+            text=VISION_PROMPT,
+            image_bytes=image_bytes,
+            schema=LLMExtractedInvoice.model_json_schema(),
+        )
+    except LLMUnavailableError as e:
+        logger.warning("Vision LLM extraction failed: %s", e)
+        raise
+
+    try:
+        data = json.loads(content)
+        return LLMExtractedInvoice.model_validate(data)
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning("Vision LLM returned invalid structured output: %s", e)
         raise LLMUnavailableError(f"Model output did not match schema: {e}") from e

@@ -20,11 +20,12 @@ import logging
 import time
 from typing import Iterator
 
-from app.core.config import GROQ_API_KEY, GROQ_MODEL, OLLAMA_MODEL
+from app.core.config import GROQ_API_KEY, GROQ_MODEL, GROQ_VISION_MODEL, OLLAMA_MODEL, OLLAMA_VISION_MODEL
 
 logger = logging.getLogger(__name__)
 
 MODEL_NAME = GROQ_MODEL if GROQ_API_KEY else OLLAMA_MODEL
+VISION_MODEL_NAME = GROQ_VISION_MODEL if GROQ_API_KEY else OLLAMA_VISION_MODEL
 
 
 class LLMUnavailableError(Exception):
@@ -41,6 +42,67 @@ def chat(messages: list[dict], schema: dict | None = None, temperature: float = 
     if GROQ_API_KEY:
         return _chat_groq(messages, schema, temperature)
     return _chat_ollama(messages, schema, temperature)
+
+
+def chat_with_image(text: str, image_bytes: bytes, schema: dict | None = None, temperature: float = 0.0) -> str:
+    """Same contract as chat() (raw reply text in, LLMUnavailableError on
+    failure, schema validated by the caller) but for the one case that
+    needs a vision-capable model instead of a text one: reading an
+    invoice directly off pixels when there's no text layer to extract
+    (see extraction_service.has_extractable_text()). Deliberately a
+    separate function rather than an optional `image` argument bolted
+    onto chat() - every other call in this app is text-only, and none
+    of them need to know this path exists."""
+    if GROQ_API_KEY:
+        return _chat_vision_groq(text, image_bytes, schema, temperature)
+    return _chat_vision_ollama(text, image_bytes, schema, temperature)
+
+
+def _chat_vision_ollama(text: str, image_bytes: bytes, schema: dict | None, temperature: float) -> str:
+    import ollama
+
+    try:
+        response = ollama.chat(
+            model=OLLAMA_VISION_MODEL,
+            messages=[{"role": "user", "content": text, "images": [image_bytes]}],
+            format=schema,
+            options={"temperature": temperature},
+        )
+        return response["message"]["content"]
+    except Exception as e:
+        raise LLMUnavailableError(str(e)) from e
+
+
+def _chat_vision_groq(text: str, image_bytes: bytes, schema: dict | None, temperature: float) -> str:
+    import base64
+
+    import httpx
+
+    if schema is not None:
+        text += f"\n\nRespond with ONLY a JSON object matching this schema: {json.dumps(schema)}"
+    b64_image = base64.b64encode(image_bytes).decode("ascii")
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": text},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_image}"}},
+        ],
+    }]
+    extra = {"response_format": {"type": "json_object"}} if schema is not None else {}
+
+    try:
+        resp = httpx.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            json={"model": GROQ_VISION_MODEL, "messages": messages, "temperature": temperature, **extra},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        body = getattr(getattr(e, "response", None), "text", "")
+        logger.warning("Groq vision call failed (model=%s): %s %s", GROQ_VISION_MODEL, e, body[:300])
+        raise LLMUnavailableError(str(e)) from e
 
 
 def chat_stream(messages: list[dict], temperature: float = 0.0) -> Iterator[str]:

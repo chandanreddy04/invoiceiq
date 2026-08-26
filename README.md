@@ -75,8 +75,8 @@ Deliberately **not** separate agents: Validation (pure arithmetic), Duplicate De
 | Language | **Python 3.12** (exactly — see [Known Issues](#known-issues--limitations)) | |
 | Backend + Frontend | FastAPI + Jinja2 (one process) | Server-rendered HTML, no separate frontend process or heavy JS-framework dependency chain |
 | Database | SQLite (SQLAlchemy ORM) | Zero setup; swapping to PostgreSQL is a `DATABASE_URL` change, no code changes |
-| LLM | Ollama running **phi3.5** (3.8B, local) | No paid API key required; runs on a CPU-only laptop; ~2.2GB |
-| Document processing | PyMuPDF | Pure Python, reads real PDF text layers; no OCR dependency (see Limitations) |
+| LLM | Ollama running **phi3.5** (3.8B, local); **llava-phi3** (3.8B, local) for vision | No paid API key required; runs on a CPU-only laptop; ~2.2GB each |
+| Document processing | PyMuPDF, + a vision-LLM fallback for scanned/photographed invoices | Pure Python, reads real PDF text layers; no OCR dependency (see Limitations) |
 | Auth | stdlib only (`hashlib.scrypt`, `hmac`) | No third-party auth framework needed at this scale |
 | Testing | pytest | 72 tests: fast deterministic unit tests + real (non-mocked) LLM integration tests |
 | Config | `python-dotenv` + `app/core/config.py` | One centralized settings module; every other module imports from it |
@@ -163,7 +163,7 @@ cp .env.example .env          # macOS/Linux
 copy .env.example .env        # Windows
 ```
 
-Every variable the application actually reads is declared in `.env.example` with a safe local-dev default — see the file for the full, accurate list (`DATABASE_URL`, `OLLAMA_HOST`, `OLLAMA_MODEL`, `SECRET_KEY`, `UPLOAD_DIR`, `MAX_UPLOAD_SIZE_MB`, `LOG_LEVEL`, `APP_NAME`, `APP_ENV`, `DATA_DIR`, `LOG_DIR`). Set a real `SECRET_KEY` before deploying anywhere beyond your own machine:
+Every variable the application actually reads is declared in `.env.example` with a safe local-dev default — see the file for the full, accurate list (`DATABASE_URL`, `OLLAMA_HOST`, `OLLAMA_MODEL`, `OLLAMA_VISION_MODEL`, `GROQ_VISION_MODEL`, `SECRET_KEY`, `UPLOAD_DIR`, `MAX_UPLOAD_SIZE_MB`, `LOG_LEVEL`, `APP_NAME`, `APP_ENV`, `DATA_DIR`, `LOG_DIR`). Set a real `SECRET_KEY` before deploying anywhere beyond your own machine:
 ```bash
 python -c "import secrets; print(secrets.token_hex(32))"
 ```
@@ -318,7 +318,7 @@ Real numbers from `python scripts/evaluate_agents.py`, run against the actual lo
 ## Known Issues & Limitations
 
 - Your system's default Python (3.14 at the time of writing) doesn't yet have prebuilt wheels for some dependencies (`pydantic-core`) — this project targets **Python 3.12** exactly, declared consistently in `pyproject.toml`, `.github/workflows/test.yml`, and this README.
-- OCR (scanned-image invoices with no text layer) is not implemented — only PDFs with a real text layer are supported. Deliberate simplification, not an oversight.
+- No OCR (no Tesseract/EasyOCR dependency, still a deliberate simplification) — but scanned PDFs and photographed/screenshotted invoices (JPG/PNG) are supported via a vision-capable LLM fallback when PyMuPDF finds no text layer (`OLLAMA_VISION_MODEL` / `GROQ_VISION_MODEL`). Less reliable than text extraction; the UI flags it as such and there's no further fallback if the vision model itself is unavailable.
 - Docker path is written but not build-verified locally (no Docker on the development machine) — flagged explicitly above, not silently assumed to work.
 - Single-organization only; multi-tenant support would need `organization_id` scoping added to a few tables (e.g. `ApprovalRequest`) that currently assume one org.
 - JSON API has no authentication (web UI does) — see Security.
@@ -326,7 +326,6 @@ Real numbers from `python scripts/evaluate_agents.py`, run against the actual lo
 
 ## Future Work
 
-- OCR support for scanned invoices (Tesseract/EasyOCR)
 - Multi-tenant organization scoping
 - API authentication
 - Replace the fixed-sequence Orchestrator with genuine LLM-based dynamic planning once there's more than one task-routing decision to make

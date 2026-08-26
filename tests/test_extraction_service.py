@@ -5,7 +5,11 @@ database - just text in, fields out.
 
 from decimal import Decimal
 
-from app.services.extraction_service import naive_parse_invoice_fields, _guess_vendor_header
+import fitz
+
+from app.services.extraction_service import (
+    naive_parse_invoice_fields, _guess_vendor_header, has_extractable_text, render_pdf_page_to_image,
+)
 
 
 SAMPLE_TEXT = """Sunrise Packaging Co.
@@ -106,3 +110,43 @@ def test_partial_match_gives_partial_confidence():
     assert result.invoice_number == "XYZ-1"
     assert result.total is None
     assert 0 < result.confidence < 1
+
+
+def test_has_extractable_text_true_for_a_real_invoice():
+    assert has_extractable_text(SAMPLE_TEXT) is True
+
+
+def test_has_extractable_text_false_for_empty_or_whitespace():
+    """What PyMuPDF actually returns for a scanned/image-only PDF page -
+    there's no text layer to find, not an error, just nothing."""
+    assert has_extractable_text("") is False
+    assert has_extractable_text("   \n\n  ") is False
+
+
+def test_has_extractable_text_false_for_a_few_stray_characters():
+    """A scanned page can still have a tiny embedded text fragment (e.g.
+    a page number stamped by a scanner) - that must not be mistaken for
+    a genuine text layer."""
+    assert has_extractable_text("12") is False
+
+
+def _blank_one_page_pdf_bytes() -> bytes:
+    doc = fitz.open()
+    doc.new_page()
+    return doc.tobytes()
+
+
+def test_render_pdf_page_to_image_returns_valid_png_bytes():
+    pdf_bytes = _blank_one_page_pdf_bytes()
+    png_bytes = render_pdf_page_to_image(pdf_bytes)
+    assert png_bytes.startswith(b"\x89PNG\r\n\x1a\n")  # the PNG file signature
+
+
+def test_render_pdf_page_to_image_matches_has_extractable_text_false():
+    """The actual scanned-PDF scenario end to end: no text layer, so
+    extraction falls through to rendering the page as an image instead
+    of giving up."""
+    pdf_bytes = _blank_one_page_pdf_bytes()
+    from app.services.extraction_service import extract_text_from_pdf
+    assert has_extractable_text(extract_text_from_pdf(pdf_bytes)) is False
+    assert len(render_pdf_page_to_image(pdf_bytes)) > 0

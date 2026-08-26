@@ -4,7 +4,7 @@
 <h1>{{ "Edit Invoice #" ~ invoice.invoice_number if invoice else "New Invoice" }}</h1>
 
 {% if invoice and invoice.source_pdf_filename %}
-<p><a href="/web/invoices/{{ invoice.id }}/source-pdf" target="_blank" rel="noopener">📄 View original uploaded PDF</a></p>
+<p><a href="/web/invoices/{{ invoice.id }}/source-pdf" target="_blank" rel="noopener">📄 View original uploaded document</a></p>
 {% endif %}
 
 {% if invoice and invoice.direction.value == "outgoing" %}
@@ -43,11 +43,11 @@ function streamRiskExplanation(invoiceId) {
 
 {% if not invoice %}
 <div style="border:1px solid #ddd; border-radius:6px; padding:1rem; margin-bottom:1.5rem; background:#f7f7f7;">
-    <h3 style="margin-top:0;">📄 Have a vendor PDF instead?</h3>
-    <p class="confidence">Upload it here to auto-fill the form below - vendor, dates, and line items. Text is extracted with PyMuPDF; you'll review and correct everything before saving. Only for incoming/vendor invoices, and only PDFs with a real text layer (not scanned images).</p>
+    <h3 style="margin-top:0;">📄 Have a vendor PDF or photo instead?</h3>
+    <p class="confidence">Upload it here to auto-fill the form below - vendor, dates, and line items. Only for incoming/vendor invoices. A PDF with a real text layer is read directly; a scanned PDF, or a photo/screenshot uploaded as JPG/PNG, is read by a vision AI model instead - you'll review and correct everything below either way.</p>
     <form method="post" action="/web/invoices/new/upload" enctype="multipart/form-data" style="display:flex; gap:0.75rem; align-items:center;">
-        <input type="file" name="file" accept="application/pdf" required style="flex:1;">
-        <button type="submit" class="secondary" style="margin-top:0;">Extract from PDF</button>
+        <input type="file" name="file" accept="application/pdf,image/jpeg,image/png" required style="flex:1;">
+        <button type="submit" class="secondary" style="margin-top:0;">Extract invoice</button>
     </form>
 </div>
 {% endif %}
@@ -55,6 +55,8 @@ function streamRiskExplanation(invoiceId) {
 {% if extraction %}
 {% if extraction.method == "llm" %}
 <p class="confidence">✅ Extracted by {{ extraction.llm_backend_label }} - including line items. Verify everything below before saving.</p>
+{% elif extraction.method == "llm_vision" %}
+<p class="confidence">👁️ No text layer found in this document, so it was read directly as an image by {{ extraction.llm_backend_label }} - including line items. Vision extraction is less reliable than text extraction; verify everything below carefully before saving.</p>
 {% elif extraction.method == "regex_fallback" %}
 <p class="confidence">⚠️ LLM was unavailable, fell back to the simple pattern-matcher (header fields only - no line items found automatically; enter them below).
 {% if extraction.total_hint %} Detected total on the document: <strong>{{ extraction.total_hint }}</strong> - use this to check your line items sum correctly.{% endif %}</p>

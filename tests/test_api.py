@@ -535,7 +535,7 @@ def test_source_pdf_returns_404_when_no_pdf_linked(client):
 
     pdf_resp = client.get(f"/web/invoices/{invoice_id}/source-pdf")
     assert pdf_resp.status_code == 404
-    assert "No original PDF" in pdf_resp.json()["detail"]
+    assert "No original document" in pdf_resp.json()["detail"]
 
 
 def test_source_pdf_returns_clear_404_when_linked_but_file_missing_from_disk(client):
@@ -1253,6 +1253,66 @@ def test_manual_incoming_invoice_with_no_vendor_still_allowed(client):
         assert invoice.vendor_id is None
     finally:
         db.close()
+
+
+def _blank_png_bytes() -> bytes:
+    import fitz
+    pix = fitz.Pixmap(fitz.csRGB, (0, 0, 10, 10), False)
+    pix.set_rect(pix.irect, (255, 255, 255))
+    return pix.tobytes("png")
+
+
+def _blank_one_page_pdf_bytes() -> bytes:
+    import fitz
+    doc = fitz.open()
+    doc.new_page()
+    return doc.tobytes()
+
+
+def test_upload_rejects_unsupported_file_type(client):
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/web/invoices/new/upload", files={"file": ("notes.txt", b"just some text", "text/plain")})
+    assert resp.status_code == 422
+    assert "only pdf, jpg, or png" in resp.text.lower()
+
+
+def test_upload_image_triggers_vision_extraction(client):
+    """The core new path: a JPG/PNG upload never had a text layer to
+    begin with, so it must go straight to the vision model - never the
+    text-extraction/regex-fallback path (there's no text to feed either
+    one)."""
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/web/invoices/new/upload", files={"file": ("photo.png", _blank_png_bytes(), "image/png")})
+    assert resp.status_code == 200
+    assert "read directly as an image" in resp.text.lower()
+    assert '.png"' in resp.text  # the saved source filename hidden field, generated with a .png extension
+
+
+def test_upload_scanned_pdf_falls_back_to_vision_extraction(client):
+    """A PDF with no text layer (has_extractable_text() says no) must
+    fall through to the same vision path a direct image upload takes,
+    not silently produce an all-empty extraction."""
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/web/invoices/new/upload", files={"file": ("scanned.pdf", _blank_one_page_pdf_bytes(), "application/pdf")})
+    assert resp.status_code == 200
+    assert "read directly as an image" in resp.text.lower()
+
+
+def test_upload_image_shows_clear_error_when_vision_llm_unavailable(client, monkeypatch):
+    """Unlike the text path, there is no naive regex fallback possible
+    here - the whole reason this branch runs is that there's no text at
+    all. This must surface as a clear, actionable error, not a crash or
+    a silently blank form."""
+    from app.services import llm_extraction_service
+
+    def _raise(*a, **kw):
+        raise llm_extraction_service.LLMUnavailableError("no vision model")
+    monkeypatch.setattr(llm_extraction_service, "extract_invoice_from_image", _raise)
+
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/web/invoices/new/upload", files={"file": ("photo.png", _blank_png_bytes(), "image/png")})
+    assert resp.status_code == 422
+    assert "vision ai is unavailable" in resp.text.lower()
 
 
 def test_standalone_upload_page_no_longer_exists(client):

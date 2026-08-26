@@ -14,6 +14,7 @@ import csv
 import io
 import json
 import logging
+import mimetypes
 import uuid
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -376,8 +377,15 @@ async def web_new_invoice_upload(
             status_code=422,
         )
 
-    if not (file.filename or "").lower().endswith(".pdf"):
-        return _blank_form_with_error("Only PDF files are supported.")
+    # ".pdf" always goes through the text pipeline first; a scanned PDF
+    # with no text layer falls through to the same vision path a direct
+    # image upload takes (see has_extractable_text() below) - one extra
+    # branch, not a second copy of this route.
+    UPLOAD_EXTENSION_KINDS = {".pdf": "pdf", ".jpg": "image", ".jpeg": "image", ".png": "image"}
+    filename = (file.filename or "").lower()
+    ext = next((e for e in UPLOAD_EXTENSION_KINDS if filename.endswith(e)), None)
+    if ext is None:
+        return _blank_form_with_error("Only PDF, JPG, or PNG files are supported.")
 
     file_bytes = await file.read()
     if len(file_bytes) > MAX_UPLOAD_SIZE_BYTES:
@@ -387,48 +395,86 @@ async def web_new_invoice_upload(
     # client-supplied filename, which closes off path traversal
     # (e.g. "../../etc/passwd.pdf") entirely rather than trying to
     # sanitize it.
-    saved_path = UPLOAD_DIR / f"{uuid.uuid4().hex}.pdf"
+    saved_path = UPLOAD_DIR / f"{uuid.uuid4().hex}{ext}"
     saved_path.write_bytes(file_bytes)
 
-    try:
-        raw_text = extraction_service.extract_text_from_pdf(file_bytes)
-    except Exception:
-        logger.exception("Failed to read PDF %s", saved_path)
-        return _blank_form_with_error("Could not read this PDF - it may be corrupted or password-protected.")
+    raw_text = ""
+    image_bytes = None
+    if UPLOAD_EXTENSION_KINDS[ext] == "pdf":
+        try:
+            raw_text = extraction_service.extract_text_from_pdf(file_bytes)
+        except Exception:
+            logger.exception("Failed to read PDF %s", saved_path)
+            return _blank_form_with_error("Could not read this PDF - it may be corrupted or password-protected.")
+        if not extraction_service.has_extractable_text(raw_text):
+            try:
+                image_bytes = extraction_service.render_pdf_page_to_image(file_bytes)
+            except Exception:
+                logger.exception("Failed to render scanned PDF page %s", saved_path)
+                return _blank_form_with_error("Could not read this PDF - it has no text layer, and the page itself couldn't be rendered as an image either.")
+    else:
+        image_bytes = file_bytes
 
-    try:
-        llm_result = llm_extraction_service.extract_invoice_with_llm(raw_text)
-        extracted = {
-            "method": "llm",
-            "vendor_name": llm_result.vendor_name,
-            "vendor_address": llm_result.vendor_address,
-            "vendor_tax_id": llm_result.vendor_tax_id,
-            "invoice_number": llm_result.invoice_number,
-            "invoice_date": llm_result.invoice_date,
-            "due_date": llm_result.due_date,
-            "currency": llm_result.currency,
-            "tax": llm_result.tax,
-            "discount": llm_result.discount,
-            "line_items": [item.model_dump() for item in llm_result.line_items],
-            "total_hint": None,
-        }
-    except llm_extraction_service.LLMUnavailableError as e:
-        logger.info("Falling back to naive regex extraction: %s", e)
-        naive = extraction_service.naive_parse_invoice_fields(raw_text)
-        extracted = {
-            "method": "regex_fallback",
-            "vendor_name": naive.vendor_name,
-            "vendor_address": naive.vendor_address,
-            "vendor_tax_id": naive.vendor_tax_id,
-            "invoice_number": naive.invoice_number,
-            "invoice_date": naive.invoice_date.isoformat() if naive.invoice_date else None,
-            "due_date": naive.due_date.isoformat() if naive.due_date else None,
-            "currency": "USD",
-            "tax": 0,
-            "discount": 0,
-            "line_items": [],
-            "total_hint": naive.total,
-        }
+    if image_bytes is not None:
+        try:
+            vision_result = llm_extraction_service.extract_invoice_from_image(image_bytes)
+            extracted = {
+                "method": "llm_vision",
+                "vendor_name": vision_result.vendor_name,
+                "vendor_address": vision_result.vendor_address,
+                "vendor_tax_id": vision_result.vendor_tax_id,
+                "invoice_number": vision_result.invoice_number,
+                "invoice_date": vision_result.invoice_date,
+                "due_date": vision_result.due_date,
+                "currency": vision_result.currency,
+                "tax": vision_result.tax,
+                "discount": vision_result.discount,
+                "line_items": [item.model_dump() for item in vision_result.line_items],
+                "total_hint": None,
+            }
+        except llm_extraction_service.LLMUnavailableError as e:
+            # No naive fallback is possible here, unlike the text path
+            # below - the entire reason this branch runs is that there's
+            # no text to regex-parse (see has_extractable_text()).
+            logger.info("Vision extraction unavailable, no fallback possible: %s", e)
+            return _blank_form_with_error(
+                "Could not read this document - the vision AI is unavailable right now, "
+                "and there's no text layer here to fall back to. Try again shortly, or enter this invoice manually."
+            )
+    else:
+        try:
+            llm_result = llm_extraction_service.extract_invoice_with_llm(raw_text)
+            extracted = {
+                "method": "llm",
+                "vendor_name": llm_result.vendor_name,
+                "vendor_address": llm_result.vendor_address,
+                "vendor_tax_id": llm_result.vendor_tax_id,
+                "invoice_number": llm_result.invoice_number,
+                "invoice_date": llm_result.invoice_date,
+                "due_date": llm_result.due_date,
+                "currency": llm_result.currency,
+                "tax": llm_result.tax,
+                "discount": llm_result.discount,
+                "line_items": [item.model_dump() for item in llm_result.line_items],
+                "total_hint": None,
+            }
+        except llm_extraction_service.LLMUnavailableError as e:
+            logger.info("Falling back to naive regex extraction: %s", e)
+            naive = extraction_service.naive_parse_invoice_fields(raw_text)
+            extracted = {
+                "method": "regex_fallback",
+                "vendor_name": naive.vendor_name,
+                "vendor_address": naive.vendor_address,
+                "vendor_tax_id": naive.vendor_tax_id,
+                "invoice_number": naive.invoice_number,
+                "invoice_date": naive.invoice_date.isoformat() if naive.invoice_date else None,
+                "due_date": naive.due_date.isoformat() if naive.due_date else None,
+                "currency": "USD",
+                "tax": 0,
+                "discount": 0,
+                "line_items": [],
+                "total_hint": naive.total,
+            }
 
     matched_vendor_id, matched_by = _match_vendor(vendors, extracted.get("vendor_name"), extracted.get("vendor_tax_id"))
 
@@ -448,11 +494,11 @@ async def web_new_invoice_upload(
         "vendor_address": extracted.get("vendor_address"),
         "vendor_tax_id": extracted.get("vendor_tax_id"),
         "total_hint": extracted.get("total_hint"),
-        "raw_text": raw_text,
+        "raw_text": raw_text if extracted["method"] != "llm_vision" else None,
         "matched_vendor_id": matched_vendor_id,
         "matched_by": matched_by,
         "saved_pdf_filename": saved_path.name,
-        "llm_backend_label": _llm_backend_label(),
+        "llm_backend_label": _llm_vision_backend_label() if extracted["method"] == "llm_vision" else _llm_backend_label(),
     }
 
     return templates.TemplateResponse(
@@ -472,6 +518,12 @@ def _llm_backend_label() -> str:
     request - true locally, but flatly wrong on the cloud deployment,
     which has no local model at all and runs on Groq instead."""
     return f"Groq ({llm_extraction_service.MODEL_NAME})" if GROQ_API_KEY else f"the local LLM ({llm_extraction_service.MODEL_NAME})"
+
+
+def _llm_vision_backend_label() -> str:
+    """Same idea as _llm_backend_label() above, for the vision model
+    used when there's no text layer to read (see has_extractable_text())."""
+    return f"Groq ({llm_extraction_service.VISION_MODEL_NAME})" if GROQ_API_KEY else f"the local vision LLM ({llm_extraction_service.VISION_MODEL_NAME})"
 
 
 @router.post("/invoices/new", response_class=HTMLResponse)
@@ -1202,10 +1254,17 @@ def web_view_source_pdf(invoice_id: int, db: Session = Depends(get_db), current_
     there was no way to look at the original again. Only ever serves
     the exact filename already stored on the invoice record - never a
     filename taken from the request - so there's no path-traversal
-    surface here at all."""
+    surface here at all.
+
+    Despite the field's name (source_pdf_filename, unchanged since
+    before vision extraction existed - not worth a migration just to
+    rename it), this now also serves scanned/photographed invoices
+    saved as .jpg/.png by the vision upload path - hence guessing the
+    media type from the actual saved extension rather than hardcoding
+    application/pdf, which would have served an image's bytes mislabeled."""
     invoice = invoice_service.get_invoice(db, invoice_id)
     if invoice is None or not invoice.source_pdf_filename:
-        raise HTTPException(status_code=404, detail="No original PDF is linked to this invoice.")
+        raise HTTPException(status_code=404, detail="No original document is linked to this invoice.")
 
     file_path = UPLOAD_DIR / invoice.source_pdf_filename
     if not file_path.exists():
@@ -1215,10 +1274,11 @@ def web_view_source_pdf(invoice_id: int, db: Session = Depends(get_db), current_
         # crash or a broken link that looks like a bug.
         raise HTTPException(
             status_code=404,
-            detail="This invoice has a linked PDF, but the file is no longer on disk "
+            detail="This invoice has a linked document, but the file is no longer on disk "
                    "(a free-tier cloud redeploy wipes locally-saved files - the extracted invoice data is unaffected).",
         )
-    return FileResponse(file_path, media_type="application/pdf", filename=f"{invoice.invoice_number}.pdf")
+    media_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+    return FileResponse(file_path, media_type=media_type, filename=f"{invoice.invoice_number}{file_path.suffix}")
 
 
 @router.get("/invoices/{invoice_id}/pdf")
