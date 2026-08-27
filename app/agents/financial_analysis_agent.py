@@ -22,6 +22,17 @@ it does NOT decide:
   TOOL LAYER -> execute_query(): calls the fixed tools in app/tools/invoice_tools.py
   ACTION    -> read-only; this agent never writes to the database
   FEEDBACK  -> if parsing fails, falls back to a summary rather than erroring
+
+format_answer() also decides, deterministically, when to call
+fx_rate_service for a live currency conversion: totals_by_currency()
+elsewhere in this app never adds two currencies together, on purpose,
+so a summary spanning e.g. EUR and USD invoices can only ever show
+them side by side unless something fetches today's actual rate. "Is
+more than one currency present" is a plain len() check, not a
+judgment call - the LLM has no role in deciding whether to convert,
+same discipline as every other deterministic-first choice in this
+project. See fx_rate_service's own docstring for why this stays a
+plain function call rather than a real MCP tool-calling loop.
 """
 
 import json
@@ -30,6 +41,7 @@ import logging
 from sqlalchemy.orm import Session
 
 from app.schemas.query_intent import QueryIntent
+from app.services import fx_rate_service
 from app.services.llm_client import LLMUnavailableError, chat
 from app.tools import invoice_tools
 
@@ -100,6 +112,24 @@ def parse_intent(question: str) -> QueryIntent:
         raise LLMUnavailableError(str(e)) from e
 
 
+def _format_with_conversion(totals: dict) -> str:
+    """format_money_by_currency() alone, unless more than one currency
+    is actually present - then also fetch today's live rate and append
+    a single combined figure. Never called for the common single-
+    currency case, so this adds a network call only when there's
+    genuinely something to convert. Silently omits the conversion (not
+    an error the user sees) if the rate lookup fails - the per-currency
+    breakdown underneath is always shown either way, so nothing here
+    can make the answer less useful, only sometimes less convenient."""
+    base = invoice_tools.format_money_by_currency(totals)
+    if len(totals) <= 1:
+        return base
+    combined = fx_rate_service.convert_totals_to_single_currency(totals)
+    if combined is None:
+        return base
+    return f"{base} (≈ {combined:.2f} {fx_rate_service.DEFAULT_TARGET_CURRENCY} at today's rate)"
+
+
 def format_answer(intent: QueryIntent, results) -> str:
     if intent.wants_aggregate:
         by_currency = results
@@ -124,11 +154,11 @@ def format_answer(intent: QueryIntent, results) -> str:
         s = results
         lines = [
             f"You have {s['count_invoices']} invoice(s) total.",
-            f"Outstanding payable (you owe): {invoice_tools.format_money_by_currency(s['total_payable_outstanding_by_currency'])}.",
-            f"Outstanding receivable (owed to you): {invoice_tools.format_money_by_currency(s['total_receivable_outstanding_by_currency'])}.",
+            f"Outstanding payable (you owe): {_format_with_conversion(s['total_payable_outstanding_by_currency'])}.",
+            f"Outstanding receivable (owed to you): {_format_with_conversion(s['total_receivable_outstanding_by_currency'])}.",
         ]
         if s["count_overdue"]:
-            lines.append(f"{s['count_overdue']} invoice(s) are overdue, totaling {invoice_tools.format_money_by_currency(s['overdue_total_by_currency'])}.")
+            lines.append(f"{s['count_overdue']} invoice(s) are overdue, totaling {_format_with_conversion(s['overdue_total_by_currency'])}.")
         else:
             lines.append("Nothing is currently overdue.")
         return " ".join(lines)

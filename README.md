@@ -330,7 +330,7 @@ Real numbers from `python scripts/evaluate_agents.py`, run against the actual lo
 - API authentication
 - Replace the fixed-sequence Orchestrator with genuine LLM-based dynamic planning once there's more than one task-routing decision to make
 - ~~Larger local model (7B+) to reduce the compound-query intent-parsing gap~~ — tried (llama3.1:8b), did not help; see the Follow-up finding above. The real fix is likely prompt/schema redesign, not model size.
-- Real payment-gateway integration (currently simulated by design — see [`PROJECT_REPORT.md`](PROJECT_REPORT.md) for why)
+- ~~Real payment-gateway integration~~ — done: Stripe Checkout (`app/services/payment_service.py`), config-gated by `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET`, same opt-in pattern as SMTP/Groq.
 - Docker path build-verification on a machine with Docker installed
 
 ## License

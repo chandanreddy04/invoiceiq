@@ -13,7 +13,8 @@ by trying to out-word the model.
 from datetime import date, timedelta
 from decimal import Decimal
 
-from app.agents.financial_analysis_agent import _correct_ranking_intent, answer_question
+from app.agents.financial_analysis_agent import _correct_ranking_intent, _format_with_conversion, answer_question
+from app.services import fx_rate_service
 from app.models.models import Invoice, InvoiceDirection, InvoiceStatus, PaymentStatus, Vendor
 from app.schemas.query_intent import QueryIntent
 
@@ -109,3 +110,31 @@ def test_answer_question_recovers_when_llm_misses_a_least_question(db_session, o
     assert "Small Spend Vendor" in result["answer"]
     assert "is lowest at" in result["answer"]
     assert result["intent"]["wants_aggregate"] is True
+
+
+def test_format_with_conversion_skips_fx_lookup_for_a_single_currency(monkeypatch):
+    """The common case - no reason to ever call out to the FX API when
+    there's nothing to convert."""
+    def _fail(*a, **kw):
+        raise AssertionError("should never fetch a rate for a single currency")
+    monkeypatch.setattr(fx_rate_service, "convert_totals_to_single_currency", _fail)
+
+    result = _format_with_conversion({"USD": Decimal("300.00")})
+    assert result == "300.00 USD"
+
+
+def test_format_with_conversion_appends_combined_total_for_multiple_currencies(monkeypatch):
+    monkeypatch.setattr(fx_rate_service, "convert_totals_to_single_currency", lambda totals, target=None: Decimal("354.23"))
+
+    result = _format_with_conversion({"EUR": Decimal("50.00"), "USD": Decimal("300.00")})
+    assert result == "50.00 EUR + 300.00 USD (≈ 354.23 USD at today's rate)"
+
+
+def test_format_with_conversion_falls_back_cleanly_when_fx_lookup_fails(monkeypatch):
+    """The rate service is offline or the currency isn't supported -
+    the per-currency breakdown must still be shown, not an error."""
+    monkeypatch.setattr(fx_rate_service, "convert_totals_to_single_currency", lambda totals, target=None: None)
+
+    result = _format_with_conversion({"EUR": Decimal("50.00"), "USD": Decimal("300.00")})
+    assert result == "50.00 EUR + 300.00 USD"
+    assert "≈" not in result
