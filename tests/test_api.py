@@ -557,6 +557,47 @@ def test_source_pdf_returns_clear_404_when_linked_but_file_missing_from_disk(cli
     assert "no longer on disk" in pdf_resp.json()["detail"]
 
 
+def test_view_nonexistent_invoice_returns_404_not_500(client):
+    """The real bug: this route used to fall through and try to render
+    invoice_form.html for invoice=None anyway - that template's JS block
+    always references suggested_invoice_number, which this route never
+    provided, and Jinja's Undefined sentinel hit |tojson and raised a raw
+    500 instead of a clean not-found response."""
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.get("/web/invoices/999999")
+    assert resp.status_code == 404
+    assert "not found" in resp.json()["detail"].lower()
+
+
+def test_view_deleted_invoice_returns_404_not_500(client):
+    """Same bug, the actual reported path: view a real invoice's page
+    after it's been deleted (e.g. a stale bookmark or a second tab)."""
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/invoices", json={
+        "direction": "incoming", "invoice_number": "DELETE-THEN-VIEW-1", "vendor_id": 1,
+        "invoice_date": "2026-01-01", "due_date": "2026-01-31", "tax": 0, "discount": 0, "currency": "USD",
+        "items": [{"description": "X", "quantity": 1, "unit_price": 5}],
+    })
+    invoice_id = resp.json()["id"]
+
+    client.post(f"/web/invoices/{invoice_id}/delete")
+    view_resp = client.get(f"/web/invoices/{invoice_id}")
+    assert view_resp.status_code == 404
+
+
+def test_update_nonexistent_invoice_returns_404_not_500(client):
+    """Same class of gap in the sibling POST route: submitting an edit
+    for an invoice that's already been deleted must fail cleanly, not
+    call update_invoice() with invoice=None."""
+    _login(client, OWNER_EMAIL, OWNER_PASSWORD)
+    resp = client.post("/web/invoices/999999", data={
+        "direction": "incoming", "invoice_number": "X", "invoice_date": "2026-01-01", "due_date": "2026-01-31",
+        "currency": "USD", "tax": "0", "discount": "0",
+        "item_description_0": "Widget", "item_quantity_0": "1", "item_unit_price_0": "10",
+    })
+    assert resp.status_code == 404
+
+
 def test_export_invoices_csv_contains_real_data_and_respects_filters(client):
     import csv, io
 

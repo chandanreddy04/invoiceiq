@@ -615,6 +615,15 @@ async def web_create_invoice(request: Request, db: Session = Depends(get_db), cu
 @router.get("/invoices/{invoice_id}", response_class=HTMLResponse)
 def web_view_invoice(invoice_id: int, request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
     invoice = invoice_service.get_invoice(db, invoice_id)
+    if invoice is None:
+        # Real bug found live: this route used to fall through and try to
+        # render invoice_form.html anyway - it doesn't pass
+        # suggested_invoice_number (only the New Invoice routes do), and
+        # that template's JS block always references it, so Jinja's
+        # Undefined sentinel hit `|tojson` and raised a raw 500 instead of
+        # a clean "not found." A missing/deleted invoice_id should 404,
+        # same as web_view_source_pdf already does for a missing file.
+        raise HTTPException(status_code=404, detail="Invoice not found.")
     vendors = db.query(Vendor).filter(Vendor.organization_id == DEFAULT_ORG_ID).all()
     customers = db.query(Customer).filter(Customer.organization_id == DEFAULT_ORG_ID).all()
     fraud_flag = (
@@ -695,6 +704,12 @@ def web_stream_risk_explanation(invoice_id: int, db: Session = Depends(get_db), 
 async def web_update_invoice(invoice_id: int, request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_login)):
     form = await request.form()
     invoice = invoice_service.get_invoice(db, invoice_id)
+    if invoice is None:
+        # Same class of gap as web_view_invoice above: this invoice was
+        # deleted (or never existed) between page load and submit -
+        # continuing would call update_invoice() with invoice=None and
+        # crash instead of failing cleanly.
+        raise HTTPException(status_code=404, detail="Invoice not found.")
     items = _parse_items_from_form(form)
 
     try:
