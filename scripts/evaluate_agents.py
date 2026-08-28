@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import fitz
 
 from app.agents.fraud_risk_agent import score_risk, HIGH_RISK_THRESHOLD
-from app.agents.financial_analysis_agent import parse_intent
+from app.agents.financial_analysis_agent import parse_intent, parse_intent_decomposed, is_compound_question
 from app.services.extraction_service import extract_text_from_pdf
 from app.services.llm_extraction_service import extract_invoice_with_llm
 
@@ -90,9 +90,20 @@ def evaluate_fraud_agent():
 
 # ---------------------------------------------------------------------------
 # Financial Analysis Agent: intent parsing IS an LLM task, evaluated with
-# real inference. Cases 1-2 were confirmed reliable in Phase 6 manual
-# testing; cases 3-4 (compound, multi-field) were confirmed UNRELIABLE -
-# both are included so the reported accuracy reflects that honestly.
+# real inference. Cases 1-2 (single-constraint) were confirmed reliable in
+# Phase 6 manual testing. Cases 3-5 were confirmed UNRELIABLE via the single
+# big-schema call (50% exact-match / 44% field-level - see README's
+# "Follow-up finding"); a larger model (llama3.1:8b) did not help, and a
+# genuine reasoning model made it WORSE (measured live: 78.7s and still
+# wrong on one case, 303.5s and no answer at all on another - the same
+# degenerate-repetition failure already documented for the reverted
+# Fraud/Risk reasoning feature). is_compound_question() now routes these
+# through parse_intent_decomposed() - several small schema-constrained
+# calls, one per question dimension, instead of one call asking for all 14
+# fields at once - which measured 6/6 exact-match across two independent
+# runs. All cases are still included here, unmodified, so this script
+# keeps measuring the real, current, production routing behavior - not a
+# best-case subset.
 # ---------------------------------------------------------------------------
 
 INTENT_CASES = [
@@ -100,7 +111,18 @@ INTENT_CASES = [
     {"question": "How much am I owed?", "expected": {"wants_summary": True}},
     {"question": "Show overdue invoices", "expected": {"overdue_only": True, "wants_summary": False}},
     {"question": "Show paid outgoing invoices", "expected": {"payment_status": "paid", "direction": "outgoing"}},
-    {"question": "Show unpaid invoices over 500 dollars", "expected": {"payment_status": "unpaid", "min_total": 500}},
+    # overdue_only and wants_aggregate are asserted False here on purpose,
+    # not just the fields that should be set - a real bug found live while
+    # measuring the decomposed-extraction fix: the isolated intent-type
+    # call mistook "over 500" for a ranking question, and the isolated
+    # status/direction call mistook "over" for "overdue". Both fixed with
+    # explicit negative examples in their prompts; these two extra checks
+    # are what would have caught the regression if this eval script had
+    # been run as part of fixing it, so they stay as real assertions
+    # rather than being narrowed back down once the fix looked done.
+    {"question": "Show unpaid invoices over 500 dollars", "expected": {
+        "payment_status": "unpaid", "min_total": 500, "overdue_only": False, "wants_aggregate": False,
+    }},
     {"question": "List invoices under 100 dollars", "expected": {"max_total": 100}},
 ]
 
@@ -108,11 +130,13 @@ INTENT_CASES = [
 def evaluate_financial_analysis_agent():
     results = []
     for case in INTENT_CASES:
-        intent = parse_intent(case["question"]).model_dump()
+        question = case["question"]
+        parse = parse_intent_decomposed if is_compound_question(question) else parse_intent
+        intent = parse(question).model_dump()
         field_matches = {k: (intent.get(k) == v) for k, v in case["expected"].items()}
         all_correct = all(field_matches.values())
         results.append({
-            "question": case["question"], "expected": case["expected"], "got": intent,
+            "question": question, "compound": is_compound_question(question), "expected": case["expected"], "got": intent,
             "field_matches": field_matches, "all_fields_correct": all_correct,
         })
     exact_match_rate = sum(r["all_fields_correct"] for r in results) / len(results)

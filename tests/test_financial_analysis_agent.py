@@ -13,8 +13,12 @@ by trying to out-word the model.
 from datetime import date, timedelta
 from decimal import Decimal
 
-from app.agents.financial_analysis_agent import _correct_ranking_intent, _format_with_conversion, answer_question
+from app.agents.financial_analysis_agent import (
+    _correct_ranking_intent, _format_with_conversion, answer_question,
+    is_compound_question, parse_intent_decomposed,
+)
 from app.services import fx_rate_service
+from app.services.llm_client import LLMUnavailableError
 from app.models.models import Invoice, InvoiceDirection, InvoiceStatus, PaymentStatus, Vendor
 from app.schemas.query_intent import QueryIntent
 
@@ -138,3 +142,103 @@ def test_format_with_conversion_falls_back_cleanly_when_fx_lookup_fails(monkeypa
     result = _format_with_conversion({"EUR": Decimal("50.00"), "USD": Decimal("300.00")})
     assert result == "50.00 EUR + 300.00 USD"
     assert "≈" not in result
+
+
+# ---------------------------------------------------------------------------
+# is_compound_question() - the deterministic gate deciding which extraction
+# path a question takes. Every case here is grounded in the project's own
+# real evaluation questions (scripts/evaluate_agents.py's INTENT_CASES).
+# ---------------------------------------------------------------------------
+
+def test_single_constraint_questions_are_not_compound():
+    assert is_compound_question("What do I owe?") is False
+    assert is_compound_question("How much am I owed?") is False
+    assert is_compound_question("Show overdue invoices") is False
+    assert is_compound_question("List all Golden Grain invoices") is False
+
+
+def test_amount_alone_is_compound_too():
+    """A real gap found while measuring the fix: even a single amount
+    filter with nothing else reliably dropped the value via the big
+    schema (three live runs, 0/3) - the dedicated amount-only call got
+    it right 3/3, so amount questions route through it even alone."""
+    assert is_compound_question("List invoices under 100 dollars") is True
+
+
+def test_status_plus_amount_is_compound():
+    """The exact real failure case: measured live at 78.7s against a
+    reasoning model, which still dropped the amount filter anyway."""
+    assert is_compound_question("Show unpaid invoices over 500 dollars") is True
+
+
+def test_status_plus_direction_is_compound():
+    """The other real failure case: measured live at 303.5s against a
+    reasoning model, which never produced an answer at all."""
+    assert is_compound_question("Show paid outgoing invoices") is True
+
+
+def test_aggregate_plus_category_is_compound():
+    assert is_compound_question("Which vendor do I spend the most with in the utilities category?") is True
+
+
+# ---------------------------------------------------------------------------
+# parse_intent_decomposed() - mocked chat() calls, one per dimension.
+# ---------------------------------------------------------------------------
+
+def test_parse_intent_decomposed_merges_all_four_calls(monkeypatch):
+    """The actual point of decomposition: a status word and a number each
+    land in their own call, with their own tiny schema, so neither call
+    has to choose which field to keep - both survive into the merge."""
+    import json as json_module
+    import app.agents.financial_analysis_agent as faa
+
+    responses = [
+        {"wants_summary": False, "wants_aggregate": False, "aggregate_by": None, "aggregate_metric": None, "aggregate_order": None},
+        {"payment_status": "unpaid", "direction": None, "overdue_only": False},
+        {"min_total": 500, "max_total": None},
+        {"party_name": None, "invoice_number": None, "category": None, "risky_only": False},
+    ]
+    call_order = iter(responses)
+
+    def fake_chat(messages, schema=None):
+        return json_module.dumps(next(call_order))
+    monkeypatch.setattr(faa, "chat", fake_chat)
+
+    intent = parse_intent_decomposed("Show unpaid invoices over 500 dollars")
+
+    assert intent.payment_status == "unpaid"
+    assert intent.min_total == 500
+    assert intent.wants_summary is False
+
+
+def test_parse_intent_decomposed_propagates_llm_unavailable(monkeypatch):
+    """Same fallback contract as parse_intent() - a decomposed parse that
+    can't complete must fail the same clean way, not return a partially-
+    filled intent that looks more confident than it actually is."""
+    import app.agents.financial_analysis_agent as faa
+
+    def _raise(*a, **kw):
+        raise LLMUnavailableError("no model")
+    monkeypatch.setattr(faa, "chat", _raise)
+
+    try:
+        parse_intent_decomposed("Show unpaid invoices over 500 dollars")
+        assert False, "expected LLMUnavailableError"
+    except LLMUnavailableError:
+        pass
+
+
+def test_answer_question_routes_compound_questions_to_decomposed_parse(db_session, org, monkeypatch):
+    """The gate itself, exercised end to end - a compound question must
+    call the decomposed parser, not the single fast one."""
+    import app.agents.financial_analysis_agent as faa
+
+    calls = {"decomposed": 0, "fast": 0}
+    monkeypatch.setattr(faa, "parse_intent_decomposed", lambda q: (calls.__setitem__("decomposed", calls["decomposed"] + 1), QueryIntent(payment_status="unpaid", min_total=500))[1])
+    monkeypatch.setattr(faa, "parse_intent", lambda q: (calls.__setitem__("fast", calls["fast"] + 1), QueryIntent(wants_summary=True))[1])
+
+    answer_question(db_session, org.id, "Show unpaid invoices over 500 dollars")
+    assert calls == {"decomposed": 1, "fast": 0}
+
+    answer_question(db_session, org.id, "What do I owe?")
+    assert calls == {"decomposed": 1, "fast": 1}

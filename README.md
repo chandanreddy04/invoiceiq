@@ -282,13 +282,17 @@ Real numbers from `python scripts/evaluate_agents.py`, run against the actual lo
 | Agent | Metric | Result |
 |---|---|---|
 | Fraud/Risk Agent | classification accuracy | 86% (6/7 hand-labeled cases) |
-| Financial Analysis Agent | exact-match rate (intent parsing) | 50% |
-| Financial Analysis Agent | field-level accuracy | 44% |
+| Financial Analysis Agent | exact-match rate (intent parsing) | 100% (up from 50% - see Resolved finding below) |
+| Financial Analysis Agent | field-level accuracy | 100% (up from 44%) |
 | Extraction Agent | exact-match rate | 100% (3/3 synthetic invoices) |
 
-**Honest finding:** the local 3.8B model reliably parses single-constraint natural-language questions ("What do I owe?", "Show overdue invoices") but is unreliable on compound, multi-field questions ("unpaid invoices over $500") — it correctly identifies these aren't summary requests but frequently drops the specific filter values. Reported as a measured limitation, not hidden. Full methodology and a fuller academic write-up: [`PROJECT_REPORT.md`](PROJECT_REPORT.md).
+**Original finding:** the local 3.8B model reliably parsed single-constraint natural-language questions ("What do I owe?", "Show overdue invoices") but was unreliable on compound, multi-field questions ("unpaid invoices over $500") — it correctly identified these weren't summary requests but frequently dropped the specific filter values. Reported as a measured limitation at the time, not hidden. Full methodology and a fuller academic write-up: [`PROJECT_REPORT.md`](PROJECT_REPORT.md).
 
-**Follow-up finding:** a 3x larger model was tried as the obvious fix - `ollama pull llama3.1:8b`, then `OLLAMA_MODEL=llama3.1:8b python scripts/evaluate_agents.py`. It did **not** help: llama3.1:8b failed the exact same three compound questions, in the exact same way (same fields dropped), producing an identical 50% exact-match / 44% field-level score. Verified independently outside the eval script too, not just a fluke of one run. This points at the prompt/schema design (or Ollama's `format=<schema>` constrained-decoding behavior with many optional fields) as the actual bottleneck, not raw model capability - so "use a bigger model" is not the fix this particular gap needs. Left as a more precisely scoped open problem rather than a solved one.
+**Follow-up finding (bigger model, didn't help):** a 3x larger model was tried as the obvious fix - `ollama pull llama3.1:8b`, then `OLLAMA_MODEL=llama3.1:8b python scripts/evaluate_agents.py`. It did **not** help: llama3.1:8b failed the exact same three compound questions, in the exact same way (same fields dropped), producing an identical 50% exact-match / 44% field-level score. This pointed at the prompt/schema design (or Ollama's `format=<schema>` constrained-decoding behavior with many optional fields) as the actual bottleneck, not raw model capability.
+
+**Follow-up finding (reasoning model, made it worse):** a genuine reasoning model (`deepseek-r1:8b`, Ollama's `think=True`) was tried next, live, against the two real failing questions. It did not just fail to help - it measurably regressed: 78.7s to answer "unpaid invoices over 500 dollars" and it *still* dropped `min_total`; 303.5s on "paid outgoing invoices" and it never produced an answer at all (the model's thinking degenerated into repetition and exhausted its token budget before concluding - the same failure mode already documented for the reverted Fraud/Risk reasoning feature below, reproduced independently on a different task). Both runs used the exact schema-constrained JSON output the fast path already uses, so this wasn't a fairness gap.
+
+**Resolved finding (decomposed multi-turn extraction):** the second fix direction this report already named and hadn't tried - instead of one call asking the model to fill in all 14 `QueryIntent` fields at once, `parse_intent_decomposed()` makes several small calls, each constrained to a tiny schema covering one question dimension (intent type, status/direction, amount, party/category). A status word and a number no longer compete for the same call's attention. `is_compound_question()` deterministically routes a question to this path only when it actually touches 2+ dimensions, or mentions an amount at all (amount extraction turned out to be unreliable in the big schema even alone - a real gap found while measuring this fix, not anticipated in advance). Result: **100% exact-match across three independent runs** of the full evaluation set, all six questions. Latency for the routed questions: 12-17s (versus 5-7s for the untouched fast path, and versus 79-300+s for the reasoning-model attempt) - slower than the common case, but nothing close to what a reasoning model cost for a worse answer.
 
 ## Security
 
@@ -329,7 +333,9 @@ Real numbers from `python scripts/evaluate_agents.py`, run against the actual lo
 - Multi-tenant organization scoping
 - API authentication
 - Replace the fixed-sequence Orchestrator with genuine LLM-based dynamic planning once there's more than one task-routing decision to make
-- ~~Larger local model (7B+) to reduce the compound-query intent-parsing gap~~ — tried (llama3.1:8b), did not help; see the Follow-up finding above. The real fix is likely prompt/schema redesign, not model size.
+- ~~Larger local model (7B+) to reduce the compound-query intent-parsing gap~~ — tried (llama3.1:8b), did not help.
+- ~~Reasoning model for the compound-query gap~~ — tried (`deepseek-r1:8b`), made it worse (measured live: 78.7s/wrong, 303.5s/no answer).
+- ~~Decomposed multi-turn extraction for the compound-query gap~~ — done: `parse_intent_decomposed()`, 100% exact-match across three runs; see the Resolved finding above.
 - ~~Real payment-gateway integration~~ — done: Stripe Checkout (`app/services/payment_service.py`), config-gated by `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET`, same opt-in pattern as SMTP/Groq.
 - Docker path build-verification on a machine with Docker installed
 

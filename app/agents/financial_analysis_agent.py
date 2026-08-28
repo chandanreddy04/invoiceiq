@@ -37,7 +37,9 @@ plain function call rather than a real MCP tool-calling loop.
 
 import json
 import logging
+import re
 
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.schemas.query_intent import QueryIntent
@@ -109,6 +111,214 @@ def parse_intent(question: str) -> QueryIntent:
         raise
     except (json.JSONDecodeError, ValueError) as e:
         logger.warning("Intent parsing failed, defaulting to summary: %s", e)
+        raise LLMUnavailableError(str(e)) from e
+
+
+# ---------------------------------------------------------------------------
+# Decomposed multi-turn extraction for compound questions - the second of
+# two documented fix directions for the measured compound-query gap (see
+# README's "Follow-up finding"): a larger model was tried first and did NOT
+# help (llama3.1:8b failed the identical three questions the same way).
+# A genuine reasoning model was tried next, live, against the actual
+# failing cases from this project's own eval set, and made things WORSE on
+# both real measurements: 78.7s and still missed a filter on one question,
+# 303.5s and never produced an answer at all on the other (the exact
+# degenerate-repetition failure mode already documented for the reverted
+# Fraud/Risk reasoning feature, reproduced independently here). Neither
+# result is hypothetical - both were run against deepseek-r1:8b with
+# think=True + a schema-constrained JSON format, the same mechanism the
+# reverted feature used.
+#
+# This is the OTHER direction PROJECT_REPORT.md already named and never
+# tried: instead of one call asking the model to fill in every field of a
+# 14-field schema at once (where a compound question's second filter
+# reliably gets dropped), split the extraction into a handful of small,
+# independent calls, each constrained to a SMALL schema covering only one
+# question dimension. A status word and a number no longer compete for
+# the same call's attention - each has its own call, with its own tiny
+# schema, so there's nothing for the model to drop.
+# ---------------------------------------------------------------------------
+
+_STATUS_WORDS = ("unpaid", "partially paid", "partially_paid", "paid", "overdue")
+_DIRECTION_WORDS = ("incoming", "outgoing")
+_COMPARISON_WORDS = ("over", "under", "above", "below", "more than", "less than", "at least", "at most")
+_AGGREGATE_WORDS = ("most", "least", "highest", "lowest", "largest", "smallest", "top", "fewest", "average", "compare")
+_CATEGORY_HINT = "categor"  # matches "category"/"categories" - deliberately loose, this dimension is a weaker signal
+
+
+def _count_question_dimensions(question: str) -> int:
+    """How many distinct filter DIMENSIONS this question touches - not how
+    many words. 'unpaid invoices over 500' touches status + amount (2);
+    'paid outgoing invoices' touches status + direction (2); 'what do I
+    owe' touches none of these (0, it's a plain summary). Two or more is
+    exactly the shape that measurably breaks the single-call extraction -
+    see the two live-measured failures in this module's own docstring."""
+    q = question.lower()
+    dims = 0
+    if any(w in q for w in _STATUS_WORDS):
+        dims += 1
+    if any(w in q for w in _DIRECTION_WORDS):
+        dims += 1
+    if any(w in q for w in _COMPARISON_WORDS) and re.search(r"\d", q):
+        dims += 1
+    if any(w in q for w in _AGGREGATE_WORDS):
+        dims += 1
+    if _CATEGORY_HINT in q:
+        dims += 1
+    return dims
+
+
+def is_compound_question(question: str) -> bool:
+    """The deterministic gate - a plain word-and-digit check, not a model
+    call, same discipline as has_extractable_text() and the currency-count
+    check in _format_with_conversion(). Two ways in, both grounded in a
+    real measurement, not a guess:
+
+      - 2+ distinct dimensions (a status word AND a number, etc.) - the
+        documented compound-query gap this whole module exists to fix.
+      - an amount comparison alone, even with nothing else in the
+        question - a real gap found while measuring the fix above:
+        "List invoices under 100 dollars" (one dimension only) reliably
+        dropped max_total via the single big-schema call too, every one
+        of three live runs. The dedicated _AmountExtract call got it
+        right 3/3.
+
+    The common single-constraint case that's already reliable ("what do
+    I owe", "show overdue invoices") is unaffected either way."""
+    q = question.lower()
+    has_amount = any(w in q for w in _COMPARISON_WORDS) and re.search(r"\d", q)
+    if has_amount:
+        return True
+    return _count_question_dimensions(question) >= 2
+
+
+class _IntentTypeExtract(BaseModel):
+    wants_summary: bool = False
+    wants_aggregate: bool = False
+    aggregate_by: str | None = None
+    aggregate_metric: str | None = None
+    aggregate_order: str | None = None
+
+
+class _StatusDirectionExtract(BaseModel):
+    payment_status: str | None = None
+    direction: str | None = None
+    overdue_only: bool = False
+
+
+class _AmountExtract(BaseModel):
+    min_total: float | None = None
+    max_total: float | None = None
+
+
+class _PartyExtract(BaseModel):
+    party_name: str | None = None
+    invoice_number: str | None = None
+    category: str | None = None
+    risky_only: bool = False
+
+
+_INTENT_TYPE_PROMPT = (
+    "Classify what KIND of question this is about invoices. Only use the fields provided.\n"
+    "wants_summary=true ONLY for a request for totals/aggregate numbers with no list of "
+    "individual invoices implied (e.g. 'what do I owe', 'how much am I owed').\n"
+    "wants_summary=false whenever the question says 'show', 'list', or 'find' invoices, "
+    "even if it also mentions overdue or a dollar amount.\n"
+    "wants_aggregate=true ONLY for questions that explicitly ask to RANK or COMPARE across "
+    "MULTIPLE vendors/customers/categories against each other (e.g. 'which vendor do I "
+    "spend the most with', 'average invoice amount by category'). A dollar-amount threshold "
+    "like 'over 500 dollars' is a FILTER on individual invoices, never a ranking - it does "
+    "NOT make wants_aggregate true by itself. When wants_aggregate is true, set aggregate_by "
+    "('vendor', 'customer', or 'category'), aggregate_metric ('total' for spend/most, "
+    "'average' for average, 'count' for how many), and aggregate_order ('highest' for "
+    "'most'/'largest'/'top' - the default if unclear; 'lowest' for 'least'/'smallest'/"
+    "'fewest'). Otherwise leave all three null/false.\n\n"
+    "Examples:\n"
+    "Q: Show unpaid invoices over 500 dollars\n"
+    "A: {\"wants_summary\": false, \"wants_aggregate\": false, \"aggregate_by\": null, \"aggregate_metric\": null, \"aggregate_order\": null}\n"
+    "Q: Which vendor do I spend the most with?\n"
+    "A: {\"wants_summary\": false, \"wants_aggregate\": true, \"aggregate_by\": \"vendor\", \"aggregate_metric\": \"total\", \"aggregate_order\": \"highest\"}"
+)
+
+_STATUS_DIRECTION_PROMPT = (
+    "Does this question about invoices mention a payment status or a direction? Only use "
+    "the fields provided; leave a field null/false if not mentioned - never guess.\n"
+    "payment_status: one of 'unpaid', 'partially_paid', 'paid' - only if that exact word "
+    "(or a clear synonym) appears. Do NOT set this for the word 'overdue' - that's a "
+    "separate field below.\n"
+    "direction: 'incoming' (vendor bills we owe) or 'outgoing' (customer invoices owed to "
+    "us) - only if the question explicitly says incoming/outgoing or vendor/customer.\n"
+    "overdue_only=true ONLY for the specific standalone word 'overdue'. The word 'over' "
+    "(as in 'over 500 dollars', meaning MORE THAN a number) is completely unrelated to "
+    "'overdue' and must never set this field - 'over' is about an amount, 'overdue' is "
+    "about a due date having passed.\n\n"
+    "Examples:\n"
+    "Q: Show unpaid invoices over 500 dollars\n"
+    "A: {\"payment_status\": \"unpaid\", \"direction\": null, \"overdue_only\": false}\n"
+    "Q: Show overdue invoices\n"
+    "A: {\"payment_status\": null, \"direction\": null, \"overdue_only\": true}"
+)
+
+_AMOUNT_PROMPT = (
+    "Does this question about invoices mention a minimum or maximum dollar amount? Only "
+    "use the fields provided; leave a field null if no number is stated for it - never "
+    "guess one, and never fill an unmentioned bound with 0.\n"
+    "min_total: the number after words like 'over', 'above', 'more than', 'at least'.\n"
+    "max_total: the number after words like 'under', 'below', 'less than', 'at most'.\n"
+    "Only ONE of these is usually mentioned - the other stays null, not 0.\n\n"
+    "Examples:\n"
+    "Q: List invoices under 100 dollars\n"
+    "A: {\"min_total\": null, \"max_total\": 100}\n"
+    "Q: Show unpaid invoices over 500 dollars\n"
+    "A: {\"min_total\": 500, \"max_total\": null}"
+)
+
+_PARTY_PROMPT = (
+    "Does this question about invoices mention a specific vendor/customer name, invoice "
+    "number, expense category, or ask about risky/suspicious invoices? Only use the fields "
+    "provided; leave a field null/false if not mentioned - never guess.\n"
+    "party_name: the vendor or customer name, as free text (e.g. 'golden grain').\n"
+    "invoice_number: only if a specific invoice number or fragment is mentioned.\n"
+    "category: only if an expense/spending category is explicitly named (e.g. 'utilities').\n"
+    "risky_only=true for words like 'suspicious', 'risky', 'flagged', or 'fraud'."
+)
+
+
+def _extract_one(question: str, system_prompt: str, model_cls: type[BaseModel]) -> dict:
+    """One small, focused call - schema constrained to model_cls's few
+    fields only, never the full 14-field QueryIntent. Raises
+    LLMUnavailableError exactly like parse_intent() does, so the caller's
+    existing fallback handles a decomposed call failing the same way a
+    single-call one always has."""
+    content = chat(
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": question},
+        ],
+        schema=model_cls.model_json_schema(),
+    )
+    return model_cls.model_validate(json.loads(content)).model_dump()
+
+
+def parse_intent_decomposed(question: str) -> QueryIntent:
+    """The compound-question path: several small extraction calls instead
+    of one big one, each constrained to a schema covering a single
+    dimension (see this module's docstring for why). Any one call failing
+    (LLM unavailable, bad JSON) fails the whole parse the same way
+    parse_intent() already does - this never silently returns a partially-
+    filled intent that looks more confident than it is."""
+    try:
+        merged: dict = {}
+        merged.update(_extract_one(question, _INTENT_TYPE_PROMPT, _IntentTypeExtract))
+        merged.update(_extract_one(question, _STATUS_DIRECTION_PROMPT, _StatusDirectionExtract))
+        merged.update(_extract_one(question, _AMOUNT_PROMPT, _AmountExtract))
+        merged.update(_extract_one(question, _PARTY_PROMPT, _PartyExtract))
+        return QueryIntent.model_validate(merged)
+    except LLMUnavailableError as e:
+        logger.warning("Decomposed intent parsing failed, defaulting to summary: %s", e)
+        raise
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning("Decomposed intent parsing failed, defaulting to summary: %s", e)
         raise LLMUnavailableError(str(e)) from e
 
 
@@ -212,8 +422,13 @@ def _correct_ranking_intent(question: str, intent: QueryIntent) -> QueryIntent:
 
 
 def answer_question(db: Session, org_id: int, question: str) -> dict:
+    # is_compound_question() decides deterministically which extraction
+    # path runs - the single fast call for the common case, several small
+    # ones for a question that measurably breaks the single call. Neither
+    # path is ever chosen by the model itself.
+    parse = parse_intent_decomposed if is_compound_question(question) else parse_intent
     try:
-        intent = parse_intent(question)
+        intent = parse(question)
     except LLMUnavailableError:
         intent = QueryIntent(wants_summary=True)  # graceful fallback: at least give something useful
     else:
